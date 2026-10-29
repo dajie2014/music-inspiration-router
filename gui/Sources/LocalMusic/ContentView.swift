@@ -98,6 +98,33 @@ final class AppViewModel: ObservableObject {
     /// 音频拆谱的一句话（拆出几条轨、存到哪儿）。
     @Published var transcribeStatus: String = ""
 
+    // MARK: - 改改乐器（2026-10-29）
+
+    /// 上一次拆 MIDI 用的源音频 —— 「改改乐器」重跑要用它（换过文件夹就找不回来了）。
+    private var lastMIDIAudio: URL?
+    /// 上一次拆出来的 MIDI 落在哪儿。有它，界面上才摆那一行入口。
+    @Published var lastMIDIURL: URL?
+    /// 上一次 MIDI 里**真有的**乐器（英文 key）—— 勾选清单拿它预选。
+    @Published var lastMIDIInstruments: [String] = []
+    /// 「改改乐器」小窗开没开。
+    @Published var showsInstrumentPicker: Bool = false
+    /// 小窗里勾了哪些（空 = 不点名，让它自己判断）。
+    @Published var pickedInstruments: Set<String> = []
+    /// 重拆正在跑。
+    @Published var retranscribeBusy: Bool = false
+
+    /// 「扒歌词」正在忙（拆人声 + 认字）。
+    @Published var lyricsBusy: Bool = false
+    /// 「扒歌词」的一句话：认出来多少字、存到哪儿。
+    @Published var lyricsStatus: String = ""
+    /// 最近一次扒歌词留下的人声轨和输出文件夹 —— 「重新对齐」要用。
+    private var lastVocals: URL?
+    private var lastLyricsFolder: URL?
+    /// 重新对齐正在忙。
+    @Published var alignBusy: Bool = false
+    /// 重新对齐的一句话。
+    @Published var alignStatus: String = ""
+
     let client = BackendClient()
     /// 试听用的播放器。它可以把声音**指定**送到偏好设置里选的那块声卡。
     let player = DevicePlayer()
@@ -525,7 +552,13 @@ final class AppViewModel: ObservableObject {
                             "没找到 MuScriptor 的模型文件，出不了 MIDI。\(cpp.human)")
                     }
                     let midURL = folder.appendingPathComponent("拆轨.mid")
-                    try await AudioCppClient.transcribeToMIDI(audio: file, output: midURL)
+                    let eventsURL = folder.appendingPathComponent("拆轨乐器.json")
+                    let used = try await AudioCppClient.transcribeToMIDI(
+                        audio: file, output: midURL, eventsOut: eventsURL)
+                    // 记下来源与产物：「改改乐器」要拿同一段音频、写回同一个文件
+                    lastMIDIAudio = file
+                    lastMIDIURL = midURL
+                    lastMIDIInstruments = used
                     // 补乐器名：文件里写英文，界面上说中文
                     let tracks = (try? MIDITrackNames.annotate(midURL)) ?? []
                     if tracks.isEmpty {
@@ -543,6 +576,135 @@ final class AppViewModel: ObservableObject {
             } catch {
                 transcribeBusy = false
                 transcribeStatus = error.localizedDescription
+            }
+        }
+    }
+
+    /// 「改改乐器」：拿同一段音频、按勾选的乐器再拆一遍，写回同一份 `拆轨.mid`。
+    ///
+    /// 为什么覆盖而不是另存一份：用户的意思是「这条拆错了，重来」，
+    /// 不是「再存一份」。留一堆同名文件夹，他反而分不清哪份是最后的。
+    /// `拆轨乐器.json`（事件原文）一起重写 —— 它跟 MIDI 永远是同一轮的产物。
+    ///
+    /// 一个都不勾 = 不传这个参数 = 让它自己判断，跟原来的行为完全一致。
+    func retranscribeMIDIWithPicked() {
+        guard let audio = lastMIDIAudio, let out = lastMIDIURL else { return }
+        // 按目录顺序传：集合本身无序，顺序变了模型/日志就不好对
+        let picked = MuScriptorInstrumentCatalog.all.map(\.key)
+            .filter { pickedInstruments.contains($0) }
+        showsInstrumentPicker = false
+        retranscribeBusy = true
+        transcribeStatus = picked.isEmpty
+            ? "重拆中…（这回不点名，让它自己判断）"
+            : "重拆中…（只出："
+                + picked.map { MuScriptorInstrumentCatalog.chinese(for: $0) }.joined(separator: "、")
+                + "）"
+        Task { @MainActor in
+            do {
+                let eventsURL = out.deletingLastPathComponent()
+                    .appendingPathComponent("拆轨乐器.json")
+                let used = try await AudioCppClient.transcribeToMIDI(
+                    audio: audio, output: out, instruments: picked, eventsOut: eventsURL)
+                lastMIDIInstruments = used
+                let tracks = (try? MIDITrackNames.annotate(out)) ?? []
+                retranscribeBusy = false
+                let folderName = out.deletingLastPathComponent().lastPathComponent
+                if tracks.isEmpty {
+                    transcribeStatus = "重拆完了，这回一条轨都没分出来 —— 还在「\(folderName)」里。"
+                } else {
+                    transcribeStatus = "重拆好了（\(tracks.count) 轨："
+                        + tracks.map { $0.chinese }.joined(separator: "、")
+                        + "）—— 还在「\(folderName)」里。"
+                }
+            } catch {
+                retranscribeBusy = false
+                transcribeStatus = error.localizedDescription
+            }
+        }
+    }
+
+    /// 「扒歌词」：选一首歌 → 拆人声 → 认字 → 填进歌词框。
+    ///
+    /// 2026-10-27 新加：这是 MIR 的第四条入口（音频 → 文字）。
+    /// 认出来的词直接进歌词框，接着就能走「谱子 → ACE」那条出口 ——
+    /// 扒词不是终点，是让这首歌能重新配词、重新唱。
+    func pickAudioForLyrics() {
+        let panel = NSOpenPanel()
+        panel.title = "选一首歌扒歌词"
+        panel.message = "先把伴奏剥掉，再认人声里的字。"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.audio]
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        transcribeLyricsFromAudio(file)
+    }
+
+    /// 音频 → 歌词。产物：`<时间> 歌词-<歌名>/歌词.txt` + 人声分离/。
+    func transcribeLyricsFromAudio(_ file: URL) {
+        let cpp = AudioCppClient.status()
+        guard cpp.canTranscribeLyrics else {
+            lyricsStatus = cpp.human
+            return
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        let base = file.deletingPathExtension().lastPathComponent
+        let folder = client.outputRoot.appendingPathComponent("\(stamp) 歌词-\(base)")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            lyricsStatus = "建不了输出文件夹：\(error.localizedDescription)"
+            return
+        }
+
+        lyricsBusy = true
+        lyricsStatus = "正在拆人声…（第一次跑要读模型，开头慢一点）"
+        Task { @MainActor in
+            do {
+                let text = try await AudioCppClient.transcribeLyrics(audio: file, outDir: folder)
+                form.lyrics = text
+                lastVocals = folder.appendingPathComponent("人声分离/vocals.wav")
+                lastLyricsFolder = folder
+                lyricsBusy = false
+                lyricsStatus = "认出来了（\(text.count) 字），已填进歌词框；"
+                    + "也存进了「\(folder.lastPathComponent)」"
+            } catch {
+                lyricsBusy = false
+                lyricsStatus = error.localizedDescription
+            }
+        }
+    }
+
+    /// 「按框里的词重新对齐」：把**你改过的词**重新打一遍时间轴。
+    ///
+    /// 为什么要有这一步：对齐器要求文字和音频严格对应，用刚扒出来的词（有错字）
+    /// 去对，后半段会一路崩成几十毫秒一个字。词改对了再对，它才老实。
+    func realignLyrics() {
+        guard let vocals = lastVocals,
+              FileManager.default.fileExists(atPath: vocals.path) else {
+            alignStatus = "先扒一次歌词，才有干声可以对齐。"
+            return
+        }
+        guard let folder = lastLyricsFolder else { return }
+        let text = form.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            alignStatus = "歌词框是空的。"
+            return
+        }
+
+        alignBusy = true
+        alignStatus = "正在按你改过的词对齐…"
+        Task { @MainActor in
+            // 按「呼吸」切：静音检测找人声段，词按行/句切，一句对一段。
+            // 这条路不跑识别（用的是框里的词），所以快，而且句界来自真的停顿。
+            let words = await AudioCppClient.alignBySentence(text: text, vocals: vocals, outDir: folder)
+            alignBusy = false
+            if words.isEmpty {
+                alignStatus = "没对上。"
+            } else {
+                alignStatus = "对上了：\(words.count) 个字，存了 歌词时间.txt / 歌词对齐.json"
             }
         }
     }
@@ -1238,6 +1400,7 @@ struct ContentView: View {
         .sheet(isPresented: $vm.ss2ShowsPanel) { scoreEditPanel }
         .sheet(isPresented: $showsLyricsEditor) { lyricsEditorPanel }
         .sheet(isPresented: $showsVoiceSwap) { VoiceSwapView() }
+        .sheet(isPresented: $vm.showsInstrumentPicker) { instrumentPickerPanel }
     }
 
     /// 自检开关（都只影响带环境变量启动的那一次，正常双击完全不受影响）：
@@ -1303,7 +1466,7 @@ struct ContentView: View {
                            "CS_SCORE_ONLY", "CS_SCORE_THEN_SING", "CS_SCORE_PROBE",
                            "CS_MIDI_RENAME", "CS_PLAY_SCORE",
                            "CS_TRANSCRIBE_AUDIO", "CS_PLAY_SCORE_UI",
-                           "CS_SEND_TO_ACE"]
+                           "CS_RENAME_TEST", "CS_SEND_TO_ACE"]
         let runningOtherCheck = otherChecks.contains { env[$0] != nil }
         if env["CS_WELCOME_ONLY"] == "1" {
             WelcomeWindow.shared.show()
@@ -1627,6 +1790,41 @@ struct ContentView: View {
                 exit(0)
             }
         }
+        // 「改改乐器」整条自检（2026-10-29）：
+        //   CS_RENAME_TEST=<音频>          先正常拆一遍 MIDI
+        //   CS_RENAME_INSTRUMENTS=a,b      再按这几样点名重拆（空 = 不点名重拆一遍）
+        // 验的是「拆完 → 记下来源 → 勾选 → 重拆 → 状态那行写对没有」这条线，
+        // 而不是"命令行能不能跑"（那条另有用例）。
+        if let path = env["CS_RENAME_TEST"], !path.isEmpty {
+            vm.transcribeAudio(URL(fileURLWithPath: path), wantScore: false, wantMIDI: true)
+            pollUntilDone(maxSeconds: 600) { vm.transcribeBusy } onDone: {
+                let first = vm.transcribeStatus
+                let heard = vm.lastMIDIInstruments.joined(separator: ",")
+                let wanted = (env["CS_RENAME_INSTRUMENTS"] ?? "")
+                    .split(separator: ",").map(String.init)
+                vm.pickedInstruments = Set(wanted)
+                vm.retranscribeMIDIWithPicked()
+                pollUntilDone(maxSeconds: 600) { vm.retranscribeBusy } onDone: {
+                    let out = "\n【改乐器自检】\n"
+                        + "第一次：\(first)\n"
+                        + "它听到的（英文键）：\(heard)\n"
+                        + "点名重拆：\(wanted.isEmpty ? "（不点名）" : wanted.joined(separator: ","))\n"
+                        + "重拆后：\(vm.transcribeStatus)\n"
+                    FileHandle.standardError.write(Data(out.utf8))
+                    // 抓图用：CS_RENAME_PICKER=1 把勾选小窗也打开；CS_RENAME_HOLD=秒数 停住再看
+                    if env["CS_RENAME_PICKER"] == "1" {
+                        vm.pickedInstruments = Set(vm.lastMIDIInstruments)
+                        vm.showsInstrumentPicker = true
+                    }
+                    let hold = Int(env["CS_RENAME_HOLD"] ?? "0") ?? 0
+                    if hold > 0 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(hold)) { exit(0) }
+                    } else {
+                        exit(0)
+                    }
+                }
+            }
+        }
         // 引擎也能切回 ACE-Step（批量那条路的自检用它，因为它一版只要一分多钟）
         if env["CS_ENGINE"] == "acestep" {
             vm.engine = .aceStep
@@ -1840,6 +2038,11 @@ struct ContentView: View {
                     scoreCard
                 }
                 workflowButtons
+                // 「改改乐器」（2026-10-29）：拆过 MIDI 才摆出来 ——
+                // 它修的是"刚拆的那一条"，没拆过就没有可改的东西。
+                if vm.lastMIDIURL != nil {
+                    midiRenameRow
+                }
                 if !vm.ss2Status.isEmpty {
                     Text(vm.ss2Status)
                         .font(.system(size: 12))
@@ -1856,6 +2059,18 @@ struct ContentView: View {
                     Text(vm.transcribeStatus)
                         .font(.system(size: 12))
                         .foregroundStyle(vm.transcribeBusy ? Palette.textSecondary : Palette.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !vm.lyricsStatus.isEmpty {
+                    Text(vm.lyricsStatus)
+                        .font(.system(size: 12))
+                        .foregroundStyle(vm.lyricsBusy ? Palette.textSecondary : Palette.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !vm.alignStatus.isEmpty {
+                    Text(vm.alignStatus)
+                        .font(.system(size: 12))
+                        .foregroundStyle(vm.alignBusy ? Palette.textSecondary : Palette.accent)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !vm.playStatus.isEmpty {
@@ -1939,6 +2154,15 @@ struct ContentView: View {
             }
             entryButton("输入歌词", icon: "text.cursor", busy: false) {
                 showsLyricsEditor = true
+            }
+            // 「扒歌词」（2026-10-27）：音频进来，文字出去。
+            // 和「上传音频」并列 —— 一个要谱，一个要词，都是把音频变成能改的材料。
+            entryButton("扒歌词", icon: "text.quote", busy: vm.lyricsBusy) {
+                vm.pickAudioForLyrics()
+            }
+            // 「对齐时间」（2026-10-27）：词改对了之后，再打一遍时间轴。
+            entryButton("按词对时间", icon: "clock", busy: vm.alignBusy) {
+                vm.realignLyrics()
             }
             // 「谱子出声」（2026-10-24）：照谱奏，不进模型。
             // 和「生成」分开放 —— 一个把谱面原样发成声音，一个让模型照谱唱，两件事。
@@ -2055,6 +2279,115 @@ struct ContentView: View {
         .frame(width: 780, height: 580)
         .background(Palette.windowBG)
         .preferredColorScheme(.dark)
+    }
+
+    /// 「改改乐器」那一行 —— 拆过 MIDI 才摆（2026-10-29）。
+    ///
+    /// 摆在一排入口按钮下面、状态行上面：它修的是**刚拆出来的那一条**。
+    /// 摆远了，他会以为还得重新去「上传音频」走一遍。
+    private var midiRenameRow: some View {
+        HStack(spacing: 10) {
+            Button {
+                // 预选 = 这次真听到的那几样。让他从"实际结果"里删减，
+                // 而不是面对一张空清单从零开始想。
+                vm.pickedInstruments = Set(vm.lastMIDIInstruments)
+                vm.showsInstrumentPicker = true
+            } label: {
+                Label("它听错了？改改乐器", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.accent)
+            .disabled(vm.retranscribeBusy || vm.transcribeBusy)
+
+            if vm.retranscribeBusy {
+                ProgressView().controlSize(.small)
+                Text("重拆中…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.textSecondary)
+            } else {
+                Text(midiRenameHint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// 那一行右边的话：这次听到什么，以及点名能干什么。
+    private var midiRenameHint: String {
+        let names = vm.lastMIDIInstruments.map { MuScriptorInstrumentCatalog.chinese(for: $0) }
+        guard !names.isEmpty else {
+            return "这次没听出确定的乐器；可以点名，让它只出你指定的那几样"
+        }
+        return "这次听到：" + names.joined(separator: "、") + "（可点名再拆一遍）"
+    }
+
+    /// 乐器勾选小窗。
+    ///
+    /// 三句说明都摆在上面，因为这是个「勾了就少」的开关，不说清会误伤：
+    /// 勾上的才出、漏勾那样就没有、一个都不勾＝让它自己判断。
+    ///
+    /// 最后一句是老实交代：表里没有中国民族乐器。不给希望，也不藏着。
+    private var instrumentPickerPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("改改乐器").font(.system(size: 15, weight: .semibold))
+            Text("勾上的才会出；漏勾那样就没有。一个都不勾 = 让它自己判断（跟刚才一样）。")
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(MuScriptorInstrumentCatalog.groups, id: \.self) { group in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(group)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Palette.textSecondary)
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)],
+                                      alignment: .leading, spacing: 6) {
+                                ForEach(MuScriptorInstrumentCatalog.instruments(in: group)) { item in
+                                    Toggle(item.chinese, isOn: instrumentBinding(item.key))
+                                        .font(.system(size: 12))
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxHeight: 380)
+
+            Text("这张表里没有中国民族乐器（古筝、琵琶、二胡）—— 遇到民乐，它会归到最近的西洋音色上，点名也改不了这一点。")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button("一个都不勾") { vm.pickedInstruments = [] }
+                Text("已勾 \(vm.pickedInstruments.count) 样")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.textSecondary)
+                Spacer()
+                Button("算了") { vm.showsInstrumentPicker = false }
+                Button("按这些重拆") { vm.retranscribeMIDIWithPicked() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 720, height: 620)
+        .background(Palette.windowBG)
+        .preferredColorScheme(.dark)
+    }
+
+    private func instrumentBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { vm.pickedInstruments.contains(key) },
+            set: { on in
+                if on { vm.pickedInstruments.insert(key) } else { vm.pickedInstruments.remove(key) }
+            }
+        )
     }
 
     /// 「输入歌词」的小窗。用的还是同一份 `form.lyrics`，跟主界面不分家。
