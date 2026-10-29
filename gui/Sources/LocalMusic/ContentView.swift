@@ -1168,6 +1168,22 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// 把这一首的**音频和 MIDI** 送到「灵感路由-交接」文件夹（2026-10-29）。
+    ///
+    /// 对面是 Waveform（Tracktion 的免费 DAW）。它没有"从外部往当前工程插素材"
+    /// 的接口，所以这座桥只做到**移交素材**：复制到一个固定文件夹、把访达打开，
+    /// 用户在 Waveform 里拖进工程。别对外说成"一键插进轨道"。
+    ///
+    /// 不覆盖同名文件（可能刚用过上一版），撞名就加序号。
+    func sendToWaveform(_ item: GenerationItem) {
+        let audio = item.outputPath.map { URL(fileURLWithPath: $0) }
+        let result = WaveformBridge.send(title: item.title,
+                                         audio: audio,
+                                         midi: item.midiURL)
+        transferOK = result.ok
+        transferMessage = result.message
+    }
+
     /// 把 **Live 里选中的那个 clip** 送进 ACE Studio（2026-10-18 用户要的那座桥）。
     ///
     /// 跟上面两个按钮的区别：那两个送的是**列表里选中的这一首**；
@@ -1466,7 +1482,8 @@ struct ContentView: View {
                            "CS_SCORE_ONLY", "CS_SCORE_THEN_SING", "CS_SCORE_PROBE",
                            "CS_MIDI_RENAME", "CS_PLAY_SCORE",
                            "CS_TRANSCRIBE_AUDIO", "CS_PLAY_SCORE_UI",
-                           "CS_RENAME_TEST", "CS_SEND_TO_ACE"]
+                           "CS_RENAME_TEST", "CS_SEND_TO_ACE",
+                           "CS_WAVEFORM_BRIDGE"]
         let runningOtherCheck = otherChecks.contains { env[$0] != nil }
         if env["CS_WELCOME_ONLY"] == "1" {
             WelcomeWindow.shared.show()
@@ -1824,6 +1841,18 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        // 「送到 Waveform」自检（2026-10-29）：
+        //   CS_WAVEFORM_BRIDGE=<文件>  把那个文件当成拆轨 MIDI 送一遍
+        // 验的是复制、命名、打开访达，以及回报那句话写对没有。
+        if let path = env["CS_WAVEFORM_BRIDGE"], !path.isEmpty {
+            let result = WaveformBridge.send(title: "自检-桥",
+                                             audio: nil,
+                                             midi: URL(fileURLWithPath: path))
+            let out = "\n【Waveform 桥自检】\(result.ok ? "成功" : "失败")：\(result.message)\n"
+                + "文件夹：\(WaveformBridge.folder.path)\n"
+            FileHandle.standardError.write(Data(out.utf8))
+            exit(0)
         }
         // 引擎也能切回 ACE-Step（批量那条路的自检用它，因为它一版只要一分多钟）
         if env["CS_ENGINE"] == "acestep" {
@@ -2447,6 +2476,14 @@ struct ContentView: View {
                 aceButton("MIDI → Live", systemImage: "pianokeys",
                           enabled: vm.liveState == .connected && hasMIDI(item)) {
                     vm.sendMIDIToLive(item)
+                }
+            }
+            // 「送到 Waveform」（2026-10-29）：接免费 DAW 的交接。
+            // **有音频或拆轨 MIDI 才出现** —— 什么都没有就不占这个位置。
+            if let item, hasAudio(item) || item.midiURL != nil {
+                aceButton("送到 Waveform", systemImage: "square.and.arrow.up.on.square",
+                          enabled: true) {
+                    vm.sendToWaveform(item)
                 }
             }
             liveButton
