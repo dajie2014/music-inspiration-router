@@ -21,6 +21,8 @@ final class AppViewModel: ObservableObject {
     @Published var engine: EngineKind = .yue2
     /// YuE2 只有两档 —— 实测过的就是 8 步（四分半）和 32 步（十分钟）。
     @Published var yue2Tier: Yue2Tier = .fast
+    /// 打开「纯器乐」前先把词存这儿，关掉时原样还回去（2026-11-02 加）
+    @Published var lyricsBeforeInstrumental: String = ""
     @Published var playingID: UUID?
     @Published var exportMessage: String = ""
     @Published var exporting: Bool = false
@@ -1168,6 +1170,41 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// 把这一首送进 Musio Studio（2026-11-03）。
+    ///
+    /// 前提：Studio 开着、设置里的 Agents 开关打开；桥在 `musio-bridge/musio_bridge.py`。
+    /// 音频落在 Studio 的**光标处**；MIDI 只放声部，不带它自己的速度。
+    /// 有音频先送音频，没有就送 MIDI。
+    func sendToMusio(_ item: GenerationItem) {
+        guard !transferring else { return }
+        let audio = item.outputPath.flatMap {
+            FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil
+        }
+        let midi = item.midiURL
+        guard audio != nil || midi != nil else {
+            transferOK = false
+            transferMessage = "这一首既没有音频也没有 MIDI。"
+            return
+        }
+        transferring = true
+        transferOK = nil
+        transferMessage = "正在往 Musio Studio 送…"
+        let title = item.title
+        Task.detached { [weak self] in
+            let result: MusioTransferResult
+            if let audio {
+                result = MusioTransfer.sendAudio(audio, title: title)
+            } else {
+                result = MusioTransfer.sendMIDI(midi!, title: title)
+            }
+            await MainActor.run {
+                self?.transferring = false
+                self?.transferOK = result.ok
+                self?.transferMessage = result.message
+            }
+        }
+    }
+
     /// 把这一首的**音频和 MIDI** 送到「灵感路由-交接」文件夹（2026-10-29）。
     ///
     /// 对面是 Waveform（Tracktion 的免费 DAW）。它没有"从外部往当前工程插素材"
@@ -2119,7 +2156,29 @@ struct ContentView: View {
                     }
                 }
                 labeled("歌词") {
-                    editor(text: $vm.form.lyrics, height: 128, placeholder: "[Instrumental]")
+                    VStack(alignment: .leading, spacing: 8) {
+                        editor(text: $vm.form.lyrics, height: 128, placeholder: "[Instrumental]")
+                            .disabled(isInstrumentalMode)
+                            .opacity(isInstrumentalMode ? 0.45 : 1)
+                        Toggle("纯器乐（不唱，只出伴奏）", isOn: Binding(
+                            get: { isInstrumentalMode },
+                            set: { on in
+                                if on {
+                                    vm.lyricsBeforeInstrumental = vm.form.lyrics
+                                    vm.form.lyrics = "[Instrumental]"
+                                } else {
+                                    let back = vm.lyricsBeforeInstrumental
+                                    vm.form.lyrics = back.isEmpty ? "" : back
+                                }
+                            }))
+                            .font(.system(size: 13))
+                            .toggleStyle(.checkbox)
+                        if isInstrumentalMode {
+                            Text("歌词锁住了。关掉这个勾，就能重新写词。")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                    }
                 }
                 labeled("风格") {
                     editor(text: $vm.form.prompt, height: 88,
@@ -2484,6 +2543,13 @@ struct ContentView: View {
                 aceButton("送到 Waveform", systemImage: "square.and.arrow.up.on.square",
                           enabled: true) {
                     vm.sendToWaveform(item)
+                }
+            }
+            // 「→ Musio」（2026-11-03）：送进 Musio Studio，落在它当前的光标处。
+            if let item, hasAudio(item) || item.midiURL != nil {
+                aceButton("→ Musio", systemImage: "waveform.badge.plus",
+                          enabled: !vm.transferring) {
+                    vm.sendToMusio(item)
                 }
             }
             liveButton
@@ -3234,6 +3300,11 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.stroke))
         .fixedSize()
+    }
+
+    /// 歌词框里是不是 `[Instrumental]` —— 是的话就是"纯器乐"，框该锁死。
+    private var isInstrumentalMode: Bool {
+        vm.form.lyrics.trimmingCharacters(in: .whitespacesAndNewlines) == "[Instrumental]"
     }
 
     private func editor(text: Binding<String>, height: CGFloat, placeholder: String) -> some View {

@@ -526,6 +526,32 @@ if [ -n "$LORA_PATH" ]; then
   LORA_ARGS+=(--memory-budget-gib 24)
 fi
 
+# ★ 2026-11-02 纯器乐：YuE2 不给词照样会哼，唯一可靠的办法是改谱。
+#   先单独出谱（约 40 秒）→ 清空人声轨、旋律搬到器乐轨 → 再按改好的谱生成。
+#   （`--instrumental` 是空壳；`[Instrumental]` 原来只归一成空歌词。）
+ABC_OVERRIDE=""
+INSTRUMENTAL_ONLY="$("$PY" -c 'import json,sys;d=json.load(open(sys.argv[1]));print("1" if (d.get("lyrics") or "").strip()=="[Instrumental]" else "0")' "$PARAMS" 2>/dev/null || echo 0)"
+if [ "$INSTRUMENTAL_ONLY" = "1" ] && [ "$PLAN_ONLY" != "1" ]; then
+  write_progress 2 "running" "纯器乐：先出谱（约 40 秒）" "null" "null" \
+    "出来之后会把人声轨清空，只留乐器"
+  INST_PLAN_DIR="$RUN_DIR/inst-plan"
+  rm -rf "$INST_PLAN_DIR" 2>/dev/null || true
+  if "$YUE2_BIN" plan "$REQUEST" \
+       --model models/converted --vae models/vae --precision 8bit \
+       --offline --require-ac --output "$INST_PLAN_DIR" >>"$LOG" 2>&1 \
+     && [ -f "$INST_PLAN_DIR/score.abc" ] \
+     && "$PY" "$PROJECT_ROOT/tools/strip_vocal.py" "$INST_PLAN_DIR/score.abc" >>"$LOG" 2>&1; then
+    ABC_OVERRIDE="$INST_PLAN_DIR/score.abc"
+    echo "[yue2_adapter] 纯器乐：人声轨已清空，按改好的谱生成" >>"$LOG"
+  else
+    write_progress 2 "failed" "纯器乐：改谱没成功" "null" "null" "日志里有原因"
+    echo "[yue2_adapter] 纯器乐改谱失败" >&2
+    exit 3
+  fi
+fi
+INST_ARGS=()
+[ -n "$ABC_OVERRIDE" ] && INST_ARGS+=(--abc "$ABC_OVERRIDE")
+
 # `$ACTION` 是 plan（只要谱子）或 generate（出整首歌）—— 两条子命令
 # 共用同一份请求 JSON 和同一组参数，差别只在它跑到哪一步停。
 "$YUE2_BIN" "$ACTION" "$REQUEST" \
@@ -535,7 +561,8 @@ fi
   --offline \
   --require-ac \
   --output "$WORK_DIR" \
-  ${LORA_ARGS[@]+"${LORA_ARGS[@]}"} 2>&1 | tee "$LOG" | while IFS= read -r line; do
+  ${LORA_ARGS[@]+"${LORA_ARGS[@]}"} \
+  ${INST_ARGS[@]+"${INST_ARGS[@]}"} 2>&1 | tee "$LOG" | while IFS= read -r line; do
     parse_line "$line"
   done
 
