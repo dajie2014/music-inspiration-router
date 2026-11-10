@@ -14,6 +14,28 @@ final class ScoreStudioClient {
 
     private let port: UInt16 = 8808
 
+    /// 打开工作室页面 —— **固定用 Chrome**，不碰系统默认浏览器。
+    ///
+    /// 用户 2026-11-10 提的：「在进入 MIR Studio 的时候强制使用 Chrome，
+    /// 不要使用其他的浏览器 —— 因为我的日常生活当中的确是需要 Safari 变成默认浏览器。」
+    /// 另外 studio 的 MIDI 键盘那一栏本来就只有 Chrome 认（Safari 不支持 Web MIDI）。
+    ///
+    /// 找不到 Chrome 时才退回默认浏览器 —— 能打开总比打不开强，但**不假装成功**。
+    private static func openInChrome(_ page: URL) {
+        let chrome = URL(fileURLWithPath: "/Applications/Google Chrome.app")
+        guard FileManager.default.fileExists(atPath: chrome.path) else {
+            NSWorkspace.shared.open(page)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open([page], withApplicationAt: chrome, configuration: config) { _, error in
+            guard error != nil else { return }
+            // Chrome 明明在、却没开成（极少见）—— 退回默认浏览器，别静默留个空。
+            DispatchQueue.main.async { NSWorkspace.shared.open(page) }
+        }
+    }
+
     /// 谱面工作室（现在叫 **MIR Studio**）是**可选组件**（另一个项目的本地网页服务）。
     ///
     /// 位置不写死：`CS_STUDIO_DIR` 指到哪就用哪；否则按顺序找
@@ -96,7 +118,7 @@ final class ScoreStudioClient {
             return
         }
         if isPortOpen() {
-            NSWorkspace.shared.open(page)
+            Self.openInChrome(page)
             completion(.success(page))
             return
         }
@@ -104,7 +126,7 @@ final class ScoreStudioClient {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
             guard let self else { return }
             if self.isPortOpen() {
-                NSWorkspace.shared.open(page)
+                Self.openInChrome(page)
                 completion(.success(page))
             } else {
                 completion(.failure(NSError(
@@ -174,7 +196,7 @@ final class ScoreStudioClient {
                                                 userInfo: [NSLocalizedDescriptionKey: "MIR Studio 没有回话"])))
                     return
                 }
-                NSWorkspace.shared.open(page)
+                Self.openInChrome(page)
                 completion(.success(page))
             }
         }.resume()

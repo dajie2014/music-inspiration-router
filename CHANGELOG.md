@@ -22,6 +22,12 @@
 - 模型**不另装一套**：用的是本机「Crafting Caster」已经在跑的那份 Stable Audio。
   它没开着的话，这边会先替你把它叫起来（第一次多等几秒）。
 
+**另外一处小改：进入 MIR Studio 固定用 Chrome**
+
+- 点「送到 MIR Studio」打开网页时，**只用 Chrome**，不再走你的默认浏览器 ——
+  Safari 可以安心当日常默认。没有装 Chrome 时才退回默认浏览器。
+- 顺带的好处：studio 的 MIDI 键盘那一栏本来就只有 Chrome 认。
+
 > 一句实话：Stable Audio 只做**纯音乐**。想要人唱、想要 Dorico 能打开的谱子，
 > 还是切回 YuE2。
 
