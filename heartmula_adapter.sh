@@ -271,8 +271,22 @@ print(m.group(1).split(".")[0] if m else "")
 PYEOF
 )"
 
-LEN_NOTE=""
-[ -n "$DUR_MS" ] && LEN_NOTE="，${DUR_MS} 毫秒长的音频"
+# ★ 进度卡里要说人话：用户眼睛不好，「60080 毫秒」这种数他得自己换算，
+#   不如直接写「1 分 0 秒」。
+LEN_NOTE="$("$PY" - "${DUR_MS:-}" <<'LENEOF'
+import sys
+raw = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+try:
+    s = (int(raw) + 500) // 1000
+except Exception:
+    s = 0
+if s <= 0:
+    print("")
+else:
+    m, ss = divmod(s, 60)
+    print("，%d 分 %d 秒长的音频" % (m, ss) if m else "，%d 秒长的音频" % ss)
+LENEOF
+)"
 TIME_NOTE=""
 [ -n "$WALL_MS" ] && TIME_NOTE="（用时 $((WALL_MS / 1000)) 秒${LEN_NOTE}）"
 
