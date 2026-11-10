@@ -2006,6 +2006,17 @@ struct ContentView: View {
                 vm.form.title = ""
             }
         }
+        if env["CS_ENGINE"] == "heartmula" {
+            vm.engine = .heartMuLa
+            // 自检只验链路：一小段词、30 秒上限，一分多钟就能跑完；
+            // 验的不是音质（音质由人听）。
+            if env["CS_AUTORUN"] == "1" {
+                vm.form.prompt = "pop,female vocal,piano,90 bpm"
+                vm.form.lyrics = "[Verse]\n这是自检用的两句词\n唱到这里就停\n"
+                vm.form.duration = 30
+                vm.form.title = ""
+            }
+        }
         if env["CS_ENGINE"] == "yue2" {
             vm.engine = .yue2
             vm.yue2Tier = .fast
@@ -3197,6 +3208,30 @@ struct ContentView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if vm.engine == .heartMuLa {
+                // ── HeartMuLa ──
+                // 它按歌词一句句唱，**词唱完就收尾** —— 所以这个「时长」只是上限，
+                // 不是"写多少就出多少"（2026-11-10 实测：同一段词，100 拍 2 分半、
+                // 78 拍才唱满 3 分钟）。想更长只能把词写长。
+                HStack(spacing: 16) {
+                    labeledInline("时长上限(秒)") {
+                        TextField("180", value: $vm.form.duration, format: .number)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Palette.textPrimary)
+                            .frame(width: 60)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(box)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text("歌词唱完它就收尾，所以这个数只是上限——要四分钟以上，得把词写长。\n"
+                     + "风格请用英文标签（如 pop,female vocal,piano,90 bpm）：中文标签它基本不认。\n"
+                     + "会唱词，但没有谱子。伴奏只是草稿，拿出去拆开精修。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 // ── YuE2 ──
                 // 它自己有主意：歌词写多长、歌就有多长，所以没有「时长」这一格。
@@ -3394,6 +3429,8 @@ struct ContentView: View {
                   ? "出整首歌：谱子和音频一起放在同一个文件夹里（快档约四分半）"
                   : vm.engine == .stableAudio
                   ? "出一段配乐，不唱词（30 秒约 4–6 秒）"
+                  : vm.engine == .heartMuLa
+                  ? "出一首带人声的歌：会唱词，没有谱子（三分钟约四分半）"
                   : "出这一首")
 
             // 「先出谱子」：**YuE2 那台才有**（ACE-Step 不出谱子）。

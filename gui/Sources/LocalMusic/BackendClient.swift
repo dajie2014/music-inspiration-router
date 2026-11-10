@@ -136,6 +136,7 @@ final class BackendClient: ObservableObject {
             switch request.engine {
             case "yue2":        scriptName = "yue2_adapter.sh"
             case "stableaudio": scriptName = "stable_audio_adapter.sh"
+            case "heartmula":   scriptName = "heartmula_adapter.sh"
             default:            scriptName = "render_adapter.sh"
             }
             let script = root.appendingPathComponent(scriptName).path

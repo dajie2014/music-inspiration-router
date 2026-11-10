@@ -134,9 +134,14 @@ enum EngineKind: String, CaseIterable, Identifiable {
     /// 它的模型和「Crafting Caster」共用同一份（`/Users/jieda/AI-Studio`），
     /// 这边只负责递参数、等结果，不另装一套。
     case stableAudio = "Stable Audio Medium"
+    /// HeartMuLa 3B（2026-11-10 接的第三台）：**会唱词，不出谱子**。
+    /// 用户听完定的调子：旋律稳、人声「特别干净」；伴奏不够打，拿出去拆开精修。
+    /// ⇒ 它是**人声/词草稿机**。
+    /// ⚠️ 风格只认英文标签（中文标签基本不生效，实测过）；歌词写多长、歌就有多长。
+    case heartMuLa = "HeartMuLa"
 
     /// 下拉里真正列出来的（Composer Step 那台拆了，不列）。
-    static var selectable: [EngineKind] { [.yue2, .stableAudio] }
+    static var selectable: [EngineKind] { [.yue2, .stableAudio, .heartMuLa] }
 
     var id: String { rawValue }
     var apiValue: String {
@@ -144,6 +149,7 @@ enum EngineKind: String, CaseIterable, Identifiable {
         case .aceStep:    return "acestep"
         case .yue2:       return "yue2"
         case .stableAudio: return "stableaudio"
+        case .heartMuLa:  return "heartmula"
         }
     }
 
@@ -153,6 +159,7 @@ enum EngineKind: String, CaseIterable, Identifiable {
         case .aceStep:    return "Composer Step · 一段音乐"
         case .yue2:       return "YuE2 · 一首带人声的歌 + 谱子"
         case .stableAudio: return "Stable Audio Medium · 配乐/氛围，不唱词"
+        case .heartMuLa:  return "HeartMuLa · 一首带人声的歌（无谱）"
         }
     }
 
@@ -161,6 +168,7 @@ enum EngineKind: String, CaseIterable, Identifiable {
         case .aceStep:    return "几秒到一分钟就出。适合快速试一个想法。"
         case .yue2:       return "会唱出来，还给一份能拿去 Dorico 改的谱子。没插电源不给跑。"
         case .stableAudio: return "几十秒出一段配乐，最长六分多钟。只出音乐，不唱词，也没有谱子。"
+        case .heartMuLa:  return "旋律稳、人声干净，但它风格只认英文标签，伴奏是草稿。一首约四分钟。"
         }
     }
 
@@ -174,7 +182,8 @@ enum EngineKind: String, CaseIterable, Identifiable {
     var producesScore: Bool { self == .yue2 }
 
     /// 这一台要不要「时长（秒）」这一格。
-    var usesDuration: Bool { self == .aceStep || self == .stableAudio }
+    /// HeartMuLa 也要：它那个是**上限**（歌词唱完就收尾），留着才有法控制。
+    var usesDuration: Bool { self == .aceStep || self == .stableAudio || self == .heartMuLa }
 
     /// 时长上限：Stable Audio 官方模型最长 380 秒；另外两台按老规矩夹到 300。
     var maxSeconds: Double { self == .stableAudio ? 380 : 300 }
