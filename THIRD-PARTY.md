@@ -13,7 +13,7 @@
 
 ---
 
-## 一、模型（4 个，真正在干活的）
+## 一、模型（5 个，真正在干活的）
 
 | 模型 | 在本程序里干什么 | 谁做的 | 权重许可 | 能商用？ |
 |---|---|---|---|---|
@@ -21,6 +21,7 @@
 | **SheetSage2** | 一段录音 → 草稿谱（ABC） | ShugoAI（`audio.cpp`） | **CC BY-NC 4.0** | **❌ 不能** |
 | **MuScriptor** | 一段录音 → 多轨 MIDI | ShugoAI（`audio.cpp`） | **没有找到明确标注**（权重来自 HF `audio-cpp/audio.cpp-gguf`） | **⚠️ 按「不能」处理** |
 | **MERT** | 「RealAudio 重建」时提取音频特征 | m-a-p（MERT 系列） | **CC BY-NC 4.0** | **❌ 不能** |
+| **HeartMuLa 3B**（audio.cpp 的 GGUF 量化版，2026-11-10 接上） | 歌词 + 英文风格标签 → 带人声的歌（不出谱） | HeartMuLa / 北京大学团队 | **Apache-2.0** | **✅ 可以** |
 
 来源：
 
@@ -28,6 +29,8 @@
   ——「Foundation Model Weights (CC BY-NC 4.0)」；推理代码是 Apache-2.0。
 - SheetSage2 的模型卡：<https://huggingface.co/audio-cpp/SheetSage2-GGUF>（`license: cc-by-nc-4.0`）
 - MERT 的模型卡：<https://modelscope.cn/models/m-a-p/MERT-v1-95M>（`license: cc-by-nc-4.0`）
+- HeartMuLa 的仓库与许可：<https://github.com/HeartMuLa/heartlib>（Apache-2.0）；
+  我们跑的是社区量化版（HF `audio-cpp/audio.cpp-gguf`），量化本身不改变许可。
 - MuScriptor 的模型来源：本机 `audiocpp-bin/model_specs/muscriptor.json` 指向
   HF `audio-cpp/audio.cpp-gguf`；**那个页面的许可字段我们没取到**，所以按最保守的算。
 
