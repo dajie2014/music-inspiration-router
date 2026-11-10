@@ -552,6 +552,39 @@ fi
 INST_ARGS=()
 [ -n "$ABC_OVERRIDE" ] && INST_ARGS+=(--abc "$ABC_OVERRIDE")
 
+# ── 「契约版」（2026-11-08）：一份**已经是 YuE2 原生写法**的谱，直接喂给引擎 ──
+#
+# 由头：用户要「给器乐版本定旋律」。谱由 `scripts/midi_to_ins.py` 从 MIDI 压出来，
+# 出来就是原生两声部（人声整小节休止、器乐那条有内容）—— 用户 2026-11-08 的原话：
+# 「并不是干预伴奏，而是给器乐版本定旋律」。
+#
+# ⚠️ **为什么不能走 `abc_path`**：那条路会过 `prepare_score.py`，而它**只取人声那条
+#    part、把 Ins 行写成整小节休止** —— 等于把器乐线整个抹掉（它是给外来谱收拾用的）。
+#    所以契约版单独开一条：**谱一个字节都不动，直接塞进请求**。
+CONTRACT_ABC="$(/usr/bin/python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("contract_abc") or "").strip())' "$PARAMS" 2>/dev/null || true)"
+if [ -n "$CONTRACT_ABC" ]; then
+  case "$CONTRACT_ABC" in
+    /*) ;;
+    *) CONTRACT_ABC="$(cd "$(dirname "$PARAMS")" && pwd)/$CONTRACT_ABC" ;;
+  esac
+  if [ ! -f "$CONTRACT_ABC" ]; then
+    write_progress "$LAST_PERCENT" "failed" "找不到契约版的谱：$CONTRACT_ABC" "null" "null"
+    echo "[yue2_adapter] 找不到契约版的谱：$CONTRACT_ABC" >&2
+    exit 2
+  fi
+  /usr/bin/python3 - "$REQUEST" "$CONTRACT_ABC" <<'PYEOF'
+import json, sys
+req_path, abc_path = sys.argv[1], sys.argv[2]
+data = json.load(open(req_path, encoding="utf-8"))
+data["abc"] = open(abc_path, encoding="utf-8").read()
+data["cot"] = "melody"
+data["lyrics"] = data.get("lyrics") or ""
+json.dump(data, open(req_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PYEOF
+  INST_ARGS=()          # 契约版优先：别让纯器乐那套 --abc 盖掉
+  echo "[yue2_adapter] 契约版：按给的谱直出，谱一个字不动" >>"$LOG"
+fi
+
 # `$ACTION` 是 plan（只要谱子）或 generate（出整首歌）—— 两条子命令
 # 共用同一份请求 JSON 和同一组参数，差别只在它跑到哪一步停。
 "$YUE2_BIN" "$ACTION" "$REQUEST" \

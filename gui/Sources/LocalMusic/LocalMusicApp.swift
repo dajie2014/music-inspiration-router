@@ -121,7 +121,7 @@ struct FileMenu: Commands {
         //   · 先出谱子 → 只要乐谱，先不唱；出完再按「生成」就照它唱
         //   （用户 2026-10-12 特意交代过：直接点出歌的话，谱子和歌都会出来）
         CommandGroup(after: .newItem) {
-            Button("生成一首（歌和谱子一起出）") { vm.generate() }
+            Button("生成（按上面选的模型出）") { vm.generate() }
                 .disabled(vm.isRunning)
             Button("先出谱子（只要乐谱，先不唱）") { vm.generateScoreOnly() }
                 .disabled(vm.isRunning || vm.engine != .yue2)

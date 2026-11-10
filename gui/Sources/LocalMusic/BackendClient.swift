@@ -131,7 +131,13 @@ final class BackendClient: ObservableObject {
             // 两台引擎，同一套契约（params.json 进、progress.json 出）：
             // 换的只是脚本名，起进程、轮询、停止这些一个字都不用改。
             // 老任务没写 engine 的，一律当 Composer Step。
-            let scriptName = (request.engine == "yue2") ? "yue2_adapter.sh" : "render_adapter.sh"
+            // 2026-11-10 起有三台：YuE2、Stable Audio Medium、以及拆掉了但留着后路的 Composer Step。
+            let scriptName: String
+            switch request.engine {
+            case "yue2":        scriptName = "yue2_adapter.sh"
+            case "stableaudio": scriptName = "stable_audio_adapter.sh"
+            default:            scriptName = "render_adapter.sh"
+            }
             let script = root.appendingPathComponent(scriptName).path
 
             // 脚本真的读得到吗？

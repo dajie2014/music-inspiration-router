@@ -43,6 +43,14 @@ struct GenerationRequest: Codable, Equatable {
     ///（2026-10-12 用户提的：导进来接着打磨）。
     /// ACE-Step 那条路不认这个字段，传进去它也不看。
     var abcPath: String = ""
+    /// 「契约版」的谱（2026-11-08）：一份**已经是 YuE2 原生写法**的 ABC 的绝对路径。
+    ///
+    /// 为什么跟 `abcPath` 分开：`abcPath` 那条路会过 `prepare_score.py`，而它只取人声那条
+    /// part、把器乐行写成整小节休止 —— 等于把「契约版」要的那条线抹掉。
+    /// 这个字段走的是**谱一个字节都不动**的通道（`yue2_adapter.sh` 里的 `contract_abc`）。
+    ///
+    /// 用户 2026-11-08 给这个功能的定义：「并不是干预伴奏，而是给器乐版本定旋律。」
+    var contractABC: String = ""
     /// 挂一份社区 LoRA（`.safetensors`）。空串 = 不挂。
     ///
     /// 它改的是**唱法 / 音色**（上游 README 的原话是 Custom Style/Artist LoRA），
@@ -68,6 +76,7 @@ struct GenerationRequest: Codable, Equatable {
         case repaintEnd = "repaint_end"
         case coverStrength = "cover_strength"
         case abcPath = "abc_path"
+        case contractABC = "contract_abc"
         case planOnly = "plan_only"
         case loraPath = "lora_path"
         case loraScale = "lora_scale"
@@ -101,6 +110,7 @@ extension GenerationRequest {
         engine = try c.decodeIfPresent(String.self, forKey: .engine) ?? "acestep"
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         abcPath = try c.decodeIfPresent(String.self, forKey: .abcPath) ?? ""
+        contractABC = try c.decodeIfPresent(String.self, forKey: .contractABC) ?? ""
         planOnly = try c.decodeIfPresent(Bool.self, forKey: .planOnly) ?? false
         loraPath = try c.decodeIfPresent(String.self, forKey: .loraPath) ?? ""
         loraScale = try c.decodeIfPresent(Double.self, forKey: .loraScale) ?? 1.0
@@ -120,30 +130,54 @@ extension GenerationRequest {
 enum EngineKind: String, CaseIterable, Identifiable {
     case aceStep = "Composer Step"
     case yue2 = "YuE2"
+    /// Stable Audio 3 Medium（2026-11-10 接的第二台）：出的是**没人唱的音乐**。
+    /// 它的模型和「Crafting Caster」共用同一份（`/Users/jieda/AI-Studio`），
+    /// 这边只负责递参数、等结果，不另装一套。
+    case stableAudio = "Stable Audio Medium"
 
-    /// 下拉里真正列出来的（现在只有 YuE2）。
-    static var selectable: [EngineKind] { allCases.filter { $0 != .aceStep } }
+    /// 下拉里真正列出来的（Composer Step 那台拆了，不列）。
+    static var selectable: [EngineKind] { [.yue2, .stableAudio] }
 
     var id: String { rawValue }
-    var apiValue: String { self == .aceStep ? "acestep" : "yue2" }
+    var apiValue: String {
+        switch self {
+        case .aceStep:    return "acestep"
+        case .yue2:       return "yue2"
+        case .stableAudio: return "stableaudio"
+        }
+    }
 
     /// 下拉里那行字要能一眼看出区别，所以带上「出什么」。
     var label: String {
         switch self {
-        case .aceStep: return "Composer Step · 一段音乐"
-        case .yue2:    return "YuE2 · 一首带人声的歌 + 谱子"
+        case .aceStep:    return "Composer Step · 一段音乐"
+        case .yue2:       return "YuE2 · 一首带人声的歌 + 谱子"
+        case .stableAudio: return "Stable Audio Medium · 配乐/氛围，不唱词"
         }
     }
 
     var hint: String {
         switch self {
-        case .aceStep: return "几秒到一分钟就出。适合快速试一个想法。"
-        case .yue2:    return "会唱出来，还给一份能拿去 Dorico 改的谱子。没插电源不给跑。"
+        case .aceStep:    return "几秒到一分钟就出。适合快速试一个想法。"
+        case .yue2:       return "会唱出来，还给一份能拿去 Dorico 改的谱子。没插电源不给跑。"
+        case .stableAudio: return "几十秒出一段配乐，最长六分多钟。只出音乐，不唱词，也没有谱子。"
         }
     }
 
     /// 这一台用不用得上时长/BPM/调号/模式这些格子。
     var usesACEStepParameters: Bool { self == .aceStep }
+
+    /// 这一台要不要歌词框。Stable Audio 没有人声，框摆着只会让人以为没生效。
+    var usesLyrics: Bool { self != .stableAudio }
+
+    /// 这一台会不会顺手给一份谱子。
+    var producesScore: Bool { self == .yue2 }
+
+    /// 这一台要不要「时长（秒）」这一格。
+    var usesDuration: Bool { self == .aceStep || self == .stableAudio }
+
+    /// 时长上限：Stable Audio 官方模型最长 380 秒；另外两台按老规矩夹到 300。
+    var maxSeconds: Double { self == .stableAudio ? 380 : 300 }
 }
 
 /// 三档快捷质量（对应扩散步数）。turbo 模型 8 步就够用。

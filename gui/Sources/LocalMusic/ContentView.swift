@@ -474,6 +474,89 @@ final class AppViewModel: ObservableObject {
         transcribeAudio(file, wantScore: wantScore, wantMIDI: wantMIDI)
     }
 
+    /// 「契约版」（2026-11-08）：选一份 MIDI → 压成一条器乐线 → 照它出一版器乐。
+    ///
+    /// 用户 2026-11-08 定的定义与口径：
+    /// 「**并不是干预伴奏，而是给器乐版本定旋律。**」对外一律叫**契约版**。
+    ///
+    /// 走哪条：`scripts/midi_to_ins.py` 把 `.mid` 压成 YuE2 原生 ABC
+    /// （人声整小节休止、器乐那条有内容），路径塞进 `form.contractABC`。
+    /// 那条通道**谱一个字节都不动** —— 跟 `abcPath` 不是一回事：后者会过
+    /// `prepare_score.py`，而它只取人声 part、把器乐行写成休止，等于把这条线抹掉。
+    ///
+    /// 实测（2026-11-08）：同样一份谱走这条通道，出的音频与直调引擎**逐字节相同**。
+    func pickMIDIForContract() {
+        guard !isRunning else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选一份 MIDI —— 器乐草稿"
+        panel.message = "它会变成一条器乐线，照它出一版器乐。人声永远是空的。"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType.midi]
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        contractFrom(midi: file)
+    }
+
+    /// 契约版真正的动作：压线 → 交给契约通道 → 开跑。
+    ///
+    /// 单独拆出来是为了能自检：`CS_CONTRACT_MIDI=<一份 .mid 的绝对路径>` 直接调它，
+    /// 跳过选文件那一步（选文件没法自动点）。
+    func contractFrom(midi file: URL) {
+        guard !isRunning else { return }
+        guard !form.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            exportMessage = "先在上面「风格」里写一句，比如 warm clean guitar, 120 BPM —— 契约版靠这句定声音。"
+            return
+        }
+
+        let root = BackendClient.locateRoot()
+        let script = root.appendingPathComponent("scripts/midi_to_ins.py")
+        guard FileManager.default.fileExists(atPath: script.path) else {
+            exportMessage = "找不到压线的那个脚本：\(script.path)"
+            return
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        let base = file.deletingPathExtension().lastPathComponent
+        let folder = client.outputRoot.appendingPathComponent("\(stamp) 契约-\(base)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let out = folder.appendingPathComponent("器乐线.abc")
+
+        exportMessage = "正在把这份 MIDI 压成一条器乐线…"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        proc.arguments = [script.path, file.path, out.path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        proc.terminationHandler = { [weak self] p in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            Task { @MainActor in
+                guard let self else { return }
+                guard p.terminationStatus == 0,
+                      FileManager.default.fileExists(atPath: out.path) else {
+                    self.exportMessage = "这份 MIDI 压不成线：\(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(200))"
+                    return
+                }
+                // 压好了：把这条线交给「契约版」通道，人声留空，直接开跑
+                self.engine = .yue2
+                self.form.contractABC = out.path
+                self.form.abcPath = ""
+                self.form.lyrics = ""
+                self.exportMessage = "器乐线好了（\(text.trimmingCharacters(in: .whitespacesAndNewlines))），开始出器乐"
+                self.generate()
+                // 这一版用完就把通道摘掉：免得下一次普通「生成」还偷偷走契约版
+                self.form.contractABC = ""
+            }
+        }
+        do { try proc.run() } catch {
+            exportMessage = "压线起不来：\(error.localizedDescription)"
+        }
+    }
+
     /// 音频 → 草稿谱 / MIDI。
     ///
     /// 走哪条引擎：
@@ -886,7 +969,13 @@ final class AppViewModel: ObservableObject {
         // 两台引擎的「质量档」都落在 steps 上，含义各自不同：
         // ACE-Step 是扩散步数，YuE2 是声学合成的步数（8 快 / 32 标准）。
         request.steps = engine == .yue2 ? yue2Tier.steps : tier.steps
-        request.duration = min(300, max(10, request.duration))
+        request.duration = min(engine.maxSeconds, max(10, request.duration))
+        // Stable Audio 没有人声：把可能残留在框里的词清掉 —— 一是它不认，
+        // 二是「标题取歌词首行」那条规则会因此把这一首命名成一句歌词，
+        // 而这一首明明是配乐（2026-11-10）。
+        if !engine.usesLyrics {
+            request.lyrics = "[Instrumental]"
+        }
         // 这是「出整首」，不是「只出谱子」那一条路。
         request.planOnly = false
         // 顺手把这一首的名字定下来：列表上显示的那行字，同一个；
@@ -1431,6 +1520,8 @@ struct ContentView: View {
     @State private var showsLyricsEditor = false
     /// 「换嗓子」的小窗（2026-10-25）。同样只是界面开合。
     @State private var showsVoiceSwap = false
+    /// 「录 MIDI」的小窗（2026-11-08）：接键盘弹一段器乐草稿，存成 .mid 交给器乐版。
+    @State private var showsMIDIRecorder = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1453,6 +1544,14 @@ struct ContentView: View {
         .sheet(isPresented: $vm.ss2ShowsPanel) { scoreEditPanel }
         .sheet(isPresented: $showsLyricsEditor) { lyricsEditorPanel }
         .sheet(isPresented: $showsVoiceSwap) { VoiceSwapView() }
+        .sheet(isPresented: $showsMIDIRecorder) {
+            MIDIRecorderView { url in
+                // 存好就当场交给器乐版：压成一条线，直接出一版器乐
+                vm.engine = .yue2
+                vm.form.lyrics = ""
+                vm.contractFrom(midi: url)
+            }
+        }
         .sheet(isPresented: $vm.showsInstrumentPicker) { instrumentPickerPanel }
     }
 
@@ -1520,7 +1619,7 @@ struct ContentView: View {
                            "CS_MIDI_RENAME", "CS_PLAY_SCORE",
                            "CS_TRANSCRIBE_AUDIO", "CS_PLAY_SCORE_UI",
                            "CS_RENAME_TEST", "CS_SEND_TO_ACE",
-                           "CS_WAVEFORM_BRIDGE"]
+                           "CS_WAVEFORM_BRIDGE", "CS_CONTRACT_MIDI", "CS_OPEN_MIDI_REC"]
         let runningOtherCheck = otherChecks.contains { env[$0] != nil }
         if env["CS_WELCOME_ONLY"] == "1" {
             WelcomeWindow.shared.show()
@@ -1895,6 +1994,18 @@ struct ContentView: View {
         if env["CS_ENGINE"] == "acestep" {
             vm.engine = .aceStep
         }
+        if env["CS_ENGINE"] == "stableaudio" {
+            vm.engine = .stableAudio
+            // 自检只需要一条十几秒的配乐：验的是「界面 → stable_audio_adapter.sh →
+            // Stable Audio → 音频回到列表」这条线通不通，不是音质（音质由人听）。
+            if env["CS_AUTORUN"] == "1" {
+                vm.form.prompt = "深夜小巷里的暴雨，远处偶尔一声闷雷"
+                vm.form.duration = 15
+                // 自检要看的是"这一趟"从描述起的名字，别沿用上一首存的旧名。
+                vm.form.lyrics = "[Instrumental]"
+                vm.form.title = ""
+            }
+        }
         if env["CS_ENGINE"] == "yue2" {
             vm.engine = .yue2
             vm.yue2Tier = .fast
@@ -1934,6 +2045,20 @@ struct ContentView: View {
             vm.autoSingAfterScore = env["CS_SCORE_THEN_SING"] == "1"
             guard !vm.isRunning else { return }
             vm.generateScoreOnly()
+            return
+        }
+        // 只把「录 MIDI」那个小窗打开（抓图看界面用，不录音）。
+        if env["CS_OPEN_MIDI_REC"] == "1" {
+            showsMIDIRecorder = true
+            return
+        }
+        // 器乐版自检：给一份 MIDI，直接走「压线 → 通道 → 生成」这条路。
+        if let midiPath = env["CS_CONTRACT_MIDI"], !midiPath.isEmpty {
+            vm.engine = .yue2
+            vm.yue2Tier = .fast
+            vm.form.prompt = "warm clean electric guitar, intimate, 120 BPM"
+            vm.form.lyrics = ""
+            vm.contractFrom(midi: URL(fileURLWithPath: midiPath))
             return
         }
         guard env["CS_AUTORUN"] == "1" else { return }
@@ -2092,6 +2217,7 @@ struct ContentView: View {
     private var detail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                modelBar
                 player
                 // ★ 「送进 ACE Studio」紧跟在播放条下面 —— 它在操作**选中的这一首**，
                 //   跟播放/试听是同一条线的事，所以摆在一起。
@@ -2155,29 +2281,40 @@ struct ContentView: View {
                         }
                     }
                 }
-                labeled("歌词") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        editor(text: $vm.form.lyrics, height: 128, placeholder: "[Instrumental]")
-                            .disabled(isInstrumentalMode)
-                            .opacity(isInstrumentalMode ? 0.45 : 1)
-                        Toggle("纯器乐（不唱，只出伴奏）", isOn: Binding(
-                            get: { isInstrumentalMode },
-                            set: { on in
-                                if on {
-                                    vm.lyricsBeforeInstrumental = vm.form.lyrics
-                                    vm.form.lyrics = "[Instrumental]"
-                                } else {
-                                    let back = vm.lyricsBeforeInstrumental
-                                    vm.form.lyrics = back.isEmpty ? "" : back
-                                }
-                            }))
-                            .font(.system(size: 13))
-                            .toggleStyle(.checkbox)
-                        if isInstrumentalMode {
-                            Text("歌词锁住了。关掉这个勾，就能重新写词。")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Palette.textSecondary)
+                if vm.engine.usesLyrics {
+                    labeled("歌词") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            editor(text: $vm.form.lyrics, height: 128, placeholder: "[Instrumental]")
+                                .disabled(isInstrumentalMode)
+                                .opacity(isInstrumentalMode ? 0.45 : 1)
+                            Toggle("纯器乐（不唱，只出伴奏）", isOn: Binding(
+                                get: { isInstrumentalMode },
+                                set: { on in
+                                    if on {
+                                        vm.lyricsBeforeInstrumental = vm.form.lyrics
+                                        vm.form.lyrics = "[Instrumental]"
+                                    } else {
+                                        let back = vm.lyricsBeforeInstrumental
+                                        vm.form.lyrics = back.isEmpty ? "" : back
+                                    }
+                                }))
+                                .font(.system(size: 13))
+                                .toggleStyle(.checkbox)
+                            if isInstrumentalMode {
+                                Text("歌词锁住了。关掉这个勾，就能重新写词。")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Palette.textSecondary)
+                            }
                         }
+                    }
+                } else {
+                    // Stable Audio 没有人声。框留着只会让人以为"填了却没生效"，
+                    // 所以干脆不摆框，把这件事说在明面上（2026-11-10）。
+                    labeled("歌词") {
+                        Text("这一台不唱词 —— 它只按下面的「风格」写音乐。想让人唱，把上面的模型切回 YuE2。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 labeled("风格") {
@@ -2234,6 +2371,16 @@ struct ContentView: View {
     /// 「看乐谱」只在服务给回了谱子之后出现（没有谱子时不摆一个按不动的按钮）。
     private var workflowButtons: some View {
         HStack(spacing: 8) {
+            // 「契约版」（2026-11-08）：选一份 MIDI → 一条器乐线 → 出器乐版本。
+            // 用户定的口径：对外就叫「契约版」；定义是「给器乐版本定旋律」，不是干预伴奏。
+            entryButton("器乐版", icon: "signature", busy: vm.isRunning) {
+                vm.pickMIDIForContract()
+            }
+            // 「录 MIDI」（2026-11-08）：接键盘弹一段器乐草稿，弹完直接交给器乐版。
+            // 用户要的是"不要挑音色库，就用默认的通用音色" —— 所以里面固定大钢琴。
+            entryButton("录 MIDI", icon: "record.circle", busy: false) {
+                showsMIDIRecorder = true
+            }
             entryButton("上传音频", icon: "waveform", busy: vm.transcribeBusy) {
                 vm.importAudioForCover()
             }
@@ -2711,6 +2858,81 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
     }
 
+    /// ⚠️ **一个 Menu 的 label 里不要塞一整行**（2026-11-10 两次实测）：
+    ///   那样 SwiftUI 会把 label 压到只剩第一小段，界面上只剩下「⇄ 模型」，
+    ///   后面的字全看不见 —— 看着像功能没了。⇒ 每个可点的东西各是一个 Menu。
+    private func engineMenu<L: View>(@ViewBuilder label: () -> L) -> some View {
+        Menu {
+            ForEach(EngineKind.selectable) { kind in
+                Button {
+                    vm.engine = kind
+                } label: {
+                    Text(kind.label)
+                }
+            }
+        } label: {
+            label()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    /// 最上面那条「模型」选择。
+    ///
+    /// 用户 2026-11-10 要的：「在上方多一个模型选择的下拉菜单」。
+    /// 这项原来藏在下面的参数栏里，要往下滚才看得见；而它决定的是**整张表单怎么用**
+    ///（要不要填词、有没有谱子、等多久），摆在最上面才配得上它的分量。
+    ///
+    /// ★ 同一天他先找不到（「切换模型的地方在哪里啊？」），改明显之后又发现
+    ///   「点这里换」四个字**点不动**（它原先只是挂在 Menu 旁边的普通文字）。
+    ///   现在的样子：**彩色大框**（点它换）＋ 旁边**一个同样能点的「换模型」小按钮**，
+    ///   两个都真的能点，不再有"看着像按钮却点不动"的地方。
+    private var modelBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text("模型")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Palette.textSecondary)
+
+                engineMenu {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.accent)
+                        Text(vm.engine.label)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Palette.textPrimary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Palette.textSecondary)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.accent.opacity(0.16)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.accent.opacity(0.6)))
+                }
+
+                engineMenu {
+                    Text("换模型")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.accent)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.clear))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.accent.opacity(0.45)))
+                }
+
+                Spacer(minLength: 0)
+            }
+            Text(vm.engine.hint)
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Palette.field.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.stroke))
+    }
+
     private var player: some View {
         let item = vm.items.first { $0.id == vm.selectedID }
         let ready = item?.isFinished ?? false
@@ -2866,22 +3088,8 @@ struct ContentView: View {
 
     private var parameters: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // ★ 引擎选择摆在这一栏的最上面 —— 它决定下面哪些格子还有意义。
-            //   两台引擎共用同一套「风格 / 歌词 / 质量档」，差别只在
-            //   「时长、BPM、调号、模式」这几格是 ACE-Step 独有的。
-            //   ⚠️ 2026-10-16 起只列 `selectable`（＝只有 YuE2）—— 本机那台
-            //   Composer Step 模型被拆了，不能再让它出现在下拉里。
-            HStack(spacing: 12) {
-                labeledInline("引擎") {
-                    dropdown(options: EngineKind.selectable, selection: $vm.engine) { $0.label }
-                }
-                Spacer(minLength: 0)
-            }
-            Text(vm.engine.hint)
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+            // ★ 模型那一下已经挪到最上面的 `modelBar` 里了（2026-11-10 用户要的：
+            //   「在上方多一个模型选择的下拉菜单」）。这里只按模型摆剩下的格子。
             if vm.engine.usesACEStepParameters {
             HStack(spacing: 16) {
                 labeledInline("BPM") {
@@ -2967,6 +3175,28 @@ struct ContentView: View {
                     .foregroundStyle(Palette.textSecondary.opacity(0.8))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            } else if vm.engine == .stableAudio {
+                // ── Stable Audio Medium ──
+                // 它只要两样：一句描述（上面那个「风格」框）和要多长。
+                // 时间越长等得越久，但比值很小：30 秒约 4–6 秒、满载 6 分 20 秒约 46 秒。
+                HStack(spacing: 16) {
+                    labeledInline("时长(秒)") {
+                        TextField("60", value: $vm.form.duration, format: .number)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Palette.textPrimary)
+                            .frame(width: 60)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(box)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text("最长 6 分 20 秒，写多少就出多少。\n"
+                     + "只出音乐：不唱词，也没有谱子。出来的音频和其它作品一样，就在这次新建的文件夹里。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 // ── YuE2 ──
                 // 它自己有主意：歌词写多长、歌就有多长，所以没有「时长」这一格。
@@ -3162,6 +3392,8 @@ struct ContentView: View {
             // —— 这句就在这儿说清楚，免得他以为非得先出谱子才有谱子。
             .help(vm.engine == .yue2
                   ? "出整首歌：谱子和音频一起放在同一个文件夹里（快档约四分半）"
+                  : vm.engine == .stableAudio
+                  ? "出一段配乐，不唱词（30 秒约 4–6 秒）"
                   : "出这一首")
 
             // 「先出谱子」：**YuE2 那台才有**（ACE-Step 不出谱子）。
