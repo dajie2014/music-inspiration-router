@@ -2933,6 +2933,25 @@ struct ContentView: View {
                 }
 
                 Spacer(minLength: 0)
+
+                // 「创作乐谱」：跳去曲谱工作台（NotaGen）。走的是最土的办法：
+                // 一个按钮，把它那个 .app 打开，剩下的它自己管。
+                Button {
+                    openScoreStudio()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "music.note.list")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("创作乐谱")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(Palette.accent)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Palette.accent.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.accent.opacity(0.45)))
+                }
+                .buttonStyle(.plain)
+                .help("打开曲谱工作台：选时期、作曲家、编制，让它写一段古典风格的谱子")
             }
             Text(vm.engine.hint)
                 .font(.system(size: 12))
@@ -2942,6 +2961,18 @@ struct ContentView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Palette.field.opacity(0.55)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.stroke))
+    }
+
+    /// 打开「曲谱工作台」（NotaGen 网页版，~/AI-Studio/NotaGen）。
+    /// 那个 .app 的启动器自己会拉起本地服务、再开浏览器，所以这里只管把它叫起来。
+    private func openScoreStudio() {
+        let app = URL(fileURLWithPath: "/Applications/曲谱工作台.app")
+        if FileManager.default.fileExists(atPath: app.path) {
+            NSWorkspace.shared.open(app)
+        } else if let url = URL(string: "http://127.0.0.1:7874") {
+            // 万一应用被挪走：服务若已在跑，直接开页面
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private var player: some View {
