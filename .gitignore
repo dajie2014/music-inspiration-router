@@ -78,3 +78,19 @@ docs/
 *.jpeg
 # LoRA 权重放在外盘，这里只是个符号链接 —— 不进仓库
 loras
+
+# ── MIR Remote（2026-11-17 加）──
+# 跑起来的痕迹：任务、配对码、日志、测试作品
+mir-remote/state/
+mir-remote/dist/
+# 构建时临时建的链接（指向 voicecasterrecorder 那套工具链，不进仓库）
+mir-remote/tools/android-sdk
+mir-remote/tools/zulu*
+mir-remote/tools/vc.jks
+# 下载页二维码是按本机地址生成的，不跟着代码发
+mir-remote/web/app-qr.png
+# 壳 App 的图标要跟着代码走（上面 *.png 那条会误伤它们）
+!mir-remote/app/res/**/*.png
+# 壳 App 的清单与资源里也有 .xml，它们是代码不是作品
+!mir-remote/app/AndroidManifest.xml
+!mir-remote/app/res/values/*.xml

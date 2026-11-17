@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>MIR Remote</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --text:#e8eaef; --dim:#8b93a5;
+    --accent:#4ade80; --accent-ink:#08130b; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text)}
+  body{
+    font:17px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif;
+    padding:calc(14px + env(safe-area-inset-top)) 16px calc(150px + env(safe-area-inset-bottom));
+    max-width:560px;margin:0 auto;
+  }
+  header{margin-bottom:18px}
+  h1{font-size:24px;margin:0;letter-spacing:.5px}
+  h1 .dot{color:var(--accent)}
+  .sub{color:var(--dim);font-size:14px;margin:4px 0 0}
+  section{display:none}
+  section.on{display:block}
+  label.blk{display:block;font-size:15px;color:var(--dim);margin:20px 0 8px}
+  .engines{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .engine{
+    text-align:left;background:var(--card);border:1.5px solid var(--line);border-radius:16px;
+    padding:14px;color:var(--text);font:inherit;cursor:pointer;transition:border-color .15s,background .15s;
+  }
+  .engine .t{font-size:18px;font-weight:600;display:block}
+  .engine .h{font-size:13px;color:var(--dim);display:block;margin-top:2px;line-height:1.4}
+  .engine .o{font-size:12px;color:var(--dim);display:block;margin-top:8px;opacity:.8}
+  .engine.sel{border-color:var(--accent);background:#12211a}
+  .engine.off{opacity:.45;cursor:not-allowed}
+  .engine.off .h{color:var(--bad)}
+  textarea,input[type=text],input[type=password]{
+    width:100%;background:#10131a;border:1.5px solid var(--line);border-radius:14px;
+    color:var(--text);font:inherit;padding:14px;outline:none;
+  }
+  textarea:focus,input:focus{border-color:#3a4252}
+  textarea{min-height:120px;resize:vertical;line-height:1.7}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
+    background:#10131a;border:1.5px solid var(--line);border-radius:999px;
+    padding:9px 14px;color:var(--text);font:inherit;font-size:15px;cursor:pointer;
+  }
+  .chip.sel{border-color:var(--accent);color:var(--accent)}
+  .hint{font-size:13px;color:var(--dim);margin-top:8px}
+  .go{
+    position:fixed;left:16px;right:16px;bottom:calc(74px + env(safe-area-inset-bottom));
+    max-width:528px;margin:0 auto;background:var(--accent);color:var(--accent-ink);
+    border:0;border-radius:18px;padding:20px;font:inherit;font-size:20px;font-weight:700;
+    box-shadow:0 10px 30px rgba(74,222,128,.18);cursor:pointer;
+  }
+  .go:disabled{opacity:.5}
+  /* 进度 */
+  .pct{font-size:64px;font-weight:800;line-height:1;letter-spacing:-2px;margin:24px 0 6px}
+  .pct small{font-size:24px;font-weight:600;color:var(--dim);margin-left:4px}
+  .msg{font-size:19px;min-height:32px}
+  .eta{color:var(--dim);font-size:15px;margin-top:6px}
+  .bar{height:10px;background:#10131a;border-radius:999px;overflow:hidden;margin:22px 0 10px}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .5s}
+  .waited{color:var(--dim);font-size:13px}
+  .stop{margin-top:28px;background:transparent;border:1.5px solid var(--line);color:var(--dim);
+        border-radius:14px;padding:14px;font:inherit;width:100%;cursor:pointer}
+  /* 完成 */
+  .done-title{font-size:26px;font-weight:700;margin:6px 0 2px;line-height:1.3}
+  .done-meta{color:var(--dim);font-size:14px;margin-bottom:16px}
+  audio{width:100%;margin:6px 0 16px;border-radius:12px}
+  .dl{
+    display:block;text-align:center;text-decoration:none;background:var(--accent);color:var(--accent-ink);
+    font-weight:700;font-size:18px;padding:17px;border-radius:16px;margin:10px 0;
+  }
+  .dl.ghost{background:var(--card);color:var(--text);border:1.5px solid var(--line)}
+  .note{color:var(--dim);font-size:13px;margin-top:16px;line-height:1.6}
+  .again{margin-top:22px;background:transparent;border:1.5px solid var(--line);color:var(--text);
+         border-radius:14px;padding:15px;font:inherit;width:100%;cursor:pointer}
+  /* 作品库 */
+  .song{display:flex;align-items:center;gap:12px;background:var(--card);border:1.5px solid var(--line);
+        border-radius:16px;padding:14px;margin:10px 0;cursor:pointer;text-align:left;width:100%;color:inherit;font:inherit}
+  .song .st{font-size:17px;font-weight:600}
+  .song .sm{font-size:13px;color:var(--dim);margin-top:2px}
+  .song .badge{margin-left:auto;font-size:11px;background:var(--accent);color:var(--accent-ink);
+               border-radius:6px;padding:2px 7px;font-weight:700}
+  /* tabbar */
+  nav{
+    position:fixed;left:0;right:0;bottom:0;display:none;gap:1px;
+    background:rgba(15,17,21,.92);backdrop-filter:blur(12px);border-top:1px solid var(--line);
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+  nav.on{display:flex}
+  nav button{flex:1;background:transparent;border:0;color:var(--dim);font:inherit;font-size:14px;
+             padding:10px 0;cursor:pointer}
+  nav button.sel{color:var(--accent);font-weight:600}
+  .pairbox{margin-top:40px}
+  .pairbox h2{font-size:20px;margin:0 0 6px}
+  .pairbox p{color:var(--dim);font-size:14px;margin:0 0 20px}
+  .pairbox input{font-size:26px;letter-spacing:10px;text-align:center;padding:18px}
+  .pairbox .go2{margin-top:18px;width:100%;background:var(--accent);color:var(--accent-ink);border:0;
+                border-radius:16px;padding:18px;font:inherit;font-size:19px;font-weight:700;cursor:pointer}
+  .err{color:var(--bad);font-size:14px;margin-top:12px;min-height:20px}
+  .toast{
+    position:fixed;left:50%;transform:translateX(-50%);bottom:130px;background:#222734;color:var(--text);
+    padding:12px 18px;border-radius:12px;font-size:15px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9
+  }
+  .toast.on{opacity:1}
+  .banner{display:flex;align-items:center;gap:10px;background:#12211a;border:1.5px solid #1f4a33;
+          border-radius:14px;padding:12px 14px;margin-bottom:16px;font-size:14px;cursor:pointer}
+  .banner[hidden]{display:none}
+  .banner b{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MIR Remote<span class="dot">.</span></h1>
+  <p class="sub">歌在你家电脑上做，这儿只是遥控</p>
+</header>
+
+<!-- 配对 -->
+<section id="viewPair">
+  <div class="pairbox">
+    <h2>先跟电脑配一次对</h2>
+    <p>电脑上那个窗口（或文件）里有一串 6 位数字，填进来。只填这一次。</p>
+    <input id="pairCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+    <button class="go2" id="pairBtn">连上</button>
+    <div class="err" id="pairErr"></div>
+  </div>
+</section>
+
+<!-- 出歌 -->
+<section id="viewCompose">
+  <div id="banner" class="banner" hidden></div>
+
+  <label class="blk">选一台引擎</label>
+  <div class="engines" id="engineGrid"></div>
+
+  <label class="blk" id="lyricsLabel">词</label>
+  <textarea id="lyrics" placeholder="写几行词。只写一句也行。"></textarea>
+
+  <label class="blk">风格</label>
+  <div class="chips" id="presets"></div>
+  <div style="height:10px"></div>
+  <input type="text" id="style" placeholder="也可以自己写，比如：钢琴 民谣 慢">
+  <div class="hint" id="styleHint"></div>
+
+  <div id="durBox" hidden>
+    <label class="blk">多长</label>
+    <div class="chips" id="durs"></div>
+  </div>
+
+  <div id="stepBox" hidden>
+    <label class="blk">多细</label>
+    <div class="chips" id="steps"></div>
+  </div>
+
+  <button class="go" id="goBtn">出歌</button>
+</section>
+
+<!-- 进度 -->
+<section id="viewProgress">
+  <div class="pct"><span id="pctNum">0</span><small>%</small></div>
+  <div class="msg" id="progMsg">排上了…</div>
+  <div class="eta" id="progEta"></div>
+  <div class="bar"><i id="barFill"></i></div>
+  <div class="waited" id="waited"></div>
+  <button class="stop" id="stopBtn">停</button>
+</section>
+
+<!-- 完成 -->
+<section id="viewDone">
+  <div class="done-title" id="doneTitle"></div>
+  <div class="done-meta" id="doneMeta"></div>
+  <audio id="player" controls preload="metadata"></audio>
+  <div id="downloads"></div>
+  <div class="note" id="doneNote"></div>
+  <button class="again" id="againBtn">再出一首</button>
+</section>
+
+<!-- 作品库 -->
+<section id="viewLibrary">
+  <div id="songList"></div>
+  <div class="hint" id="libEmpty" hidden>还没有作品。回去出一首吧。</div>
+</section>
+
+<nav id="tabbar">
+  <button data-view="compose" class="sel">出歌</button>
+  <button data-view="library">作品库</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  var $ = function(s){ return document.querySelector(s); };
+  var LS = {
+    token: 'mir.token', job: 'mir.job', engine: 'mir.engine',
+    lyrics: 'mir.lyrics.', lastTop: 'mir.lastTop', dur: 'mir.dur', steps: 'mir.steps'
+  };
+  var token = localStorage.getItem(LS.token) || '';
+  // 换浏览器/换手机时，可以直接带 ?token=xxx 连上（打开一次就记下，地址栏随即清干净）
+  (function(){
+    try {
+      var q = new URLSearchParams(location.search);
+      var t = q.get('token');
+      if (t) {
+        token = t;
+        localStorage.setItem(LS.token, t);
+        history.replaceState(null, '', location.pathname);
+      }
+    } catch (e) {}
+  })();
+  var currentJobId = localStorage.getItem(LS.job) || '';
+  var engines = [];
+  var engineById = {};
+  var sel = null;
+  var dur = null, steps = null;
+  var pollTimer = null, tickTimer = null;
+  var startedAt = 0;
+
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function toast(msg){
+    var t = $('#toast'); t.textContent = msg; t.classList.add('on');
+    clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('on'); }, 2600);
+  }
+
+  // ★ 复制：http 页面下 navigator.clipboard 根本不可用（浏览器只认 https/localhost），
+  //   2026-11-17 实测「点了没反应」就是这个原因。先退老办法，再不行弹个能长按的框。
+  function copyText(text, cb){
+    function fallback(){
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      cb(ok);
+    }
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function(){ cb(true); }).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function showLinkBox(url){
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#171a21;border:1px solid #262b36;border-radius:16px;padding:18px;max-width:420px;width:100%';
+    var tip = document.createElement('div');
+    tip.textContent = '长按下面这个链接，复制它';
+    tip.style.cssText = 'color:#8b93a5;font-size:14px;margin-bottom:10px';
+    box.appendChild(tip);
+    var ta = document.createElement('textarea');
+    ta.value = url; ta.readOnly = true;
+    ta.style.cssText = 'width:100%;background:#10131a;border:1px solid #262b36;border-radius:10px;color:#e8eaef;font-size:15px;padding:12px;word-break:break-all;min-height:90px;line-height:1.5';
+    box.appendChild(ta);
+    var close = document.createElement('button');
+    close.textContent = '好了';
+    close.style.cssText = 'margin-top:12px;width:100%;background:#4ade80;color:#08130b;border:0;border-radius:12px;padding:14px;font-size:17px;font-weight:700';
+    close.onclick = function(){ document.body.removeChild(ov); };
+    box.appendChild(close);
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    setTimeout(function(){ ta.focus(); ta.select(); }, 60);
+  }
+  function show(name){
+    ['viewPair','viewCompose','viewProgress','viewDone','viewLibrary'].forEach(function(id){
+      $('#'+id).classList.toggle('on', id === name);
+    });
+    var composing = name !== 'viewPair';
+    $('#tabbar').classList.toggle('on', composing);
+    $('#goBtn').style.display = name === 'viewCompose' ? 'block' : 'none';
+    var tab = (name === 'viewLibrary') ? 'library' : 'compose';
+    document.querySelectorAll('#tabbar button').forEach(function(b){
+      b.classList.toggle('sel', b.getAttribute('data-view') === tab);
+    });
+    window.scrollTo(0, 0);
+  }
+
+  // ── 网络 ──
+  function api(path, opts){
+    opts = opts || {};
+    var headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    return fetch(path, { method: opts.method || 'GET', headers: headers,
+                         body: opts.body, cache: 'no-store' })
+      .then(function(r){
+        return r.json().catch(function(){ return {}; }).then(function(j){
+          if (r.status === 401) {
+            token = ''; localStorage.removeItem(LS.token);
+            show('viewPair');
+            var e = new Error('先配对'); e.status = 401; throw e;
+          }
+          if (!r.ok) {
+            var e = new Error(j.message || j.error || ('出错 ' + r.status)); e.status = r.status; throw e;
+          }
+          return j;
+        });
+      });
+  }
+
+  // ── 配对 ──
+  $('#pairBtn').onclick = function(){
+    var code = ($('#pairCode').value || '').trim();
+    var err = $('#pairErr'); err.textContent = '';
+    if (!/^\d{6}$/.test(code)) { err.textContent = '6 位数字'; return; }
+    fetch('/v1/pair', { method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({code: code, name: '手机'}) })
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+      .then(function(x){
+        if (!x.ok) { err.textContent = x.j.message || '没对上'; return; }
+        token = x.j.token; localStorage.setItem(LS.token, token);
+        boot();
+      })
+      .catch(function(){ err.textContent = '连不上电脑，检查是不是同一个 WiFi'; });
+  };
+  $('#pairCode').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') $('#pairBtn').click();
+  });
+
+  // ── 引擎面板 ──
+  function renderEngines(){
+    var grid = $('#engineGrid'); grid.innerHTML = '';
+    engines.forEach(function(e){
+      var b = document.createElement('button');
+      b.className = 'engine' + (e.available ? '' : ' off') + (sel && sel.id === e.id ? ' sel' : '');
+      var outs = (e.outputs || []).map(function(o){
+        var p = o.split(':');
+        if (p[0] === 'score') return '谱';
+        return p[1] ? p[1].toUpperCase() : '';
+      });
+      var outsText = Array.from(new Set(outs)).join(' · ');
+      b.innerHTML = '<span class="t">' + esc(e.title) + '</span>' +
+                    '<span class="h">' + esc(e.available ? e.hint : ('没准备好：' + e.reason)) + '</span>' +
+                    '<span class="o">' + esc(outsText) + (e.eta_hint ? '　·　' + esc(e.eta_hint) : '') + '</span>';
+      if (!e.available) { b.disabled = true; }
+      b.onclick = function(){ if (!e.available) return; selectEngine(e); };
+      grid.appendChild(b);
+    });
+  }
+
+  function selectEngine(e){
+    sel = e;
+    if (e.params.steps) {
+      var opts = e.params.steps.options;
+      steps = parseInt(localStorage.getItem(LS.steps) || '', 10);
+      if (opts.indexOf(steps) < 0) steps = opts[0];
+    } else { steps = null; }
+    if (e.params.duration) {
+      dur = parseInt(localStorage.getItem(LS.dur) || '', 10);
+      if (!dur || dur < e.params.duration.min || dur > e.params.duration.max) {
+        dur = e.params.duration.default;
+      }
+    } else { dur = null; }
+
+    localStorage.setItem(LS.engine, e.id);
+    renderEngines();
+    renderEngineOptions(e);
+    // 歌词：按引擎各记一份
+    $('#lyrics').value = localStorage.getItem(LS.lyrics + e.id) || '';
+    $('#lyrics').disabled = !e.params.lyrics;
+    $('#lyricsLabel').style.display = e.params.lyrics ? 'block' : 'none';
+    $('#lyrics').style.display = e.params.lyrics ? 'block' : 'none';
+    $('#style').value = '';
+    renderPresets(e);
+  }
+
+  function renderEngineOptions(e){
+    var db = $('#durBox'), sb = $('#stepBox');
+    db.hidden = !e.params.duration;
+    if (e.params.duration) {
+      var d = e.params.duration;
+      var cands = [30, 60, 90, 180, 300].filter(function(x){ return x >= d.min && x <= d.max; });
+      if (cands.length === 0) cands = [d.default];
+      var box = $('#durs'); box.innerHTML = '';
+      cands.forEach(function(x){
+        var b = document.createElement('button');
+        b.className = 'chip' + (x === dur ? ' sel' : '');
+        b.textContent = (x < 60 ? x + ' 秒' : (x % 60 === 0 ? (x/60) + ' 分钟' : x + ' 秒'));
+        b.onclick = function(){ dur = x; localStorage.setItem(LS.dur, x); renderEngineOptions(e); };
+        box.appendChild(b);
+      });
+    }
+    sb.hidden = !e.params.steps;
+    if (e.params.steps) {
+      var opts = e.params.steps.options;
+      var names = {8:'快', 16:'中', 32:'细'};
+      var box2 = $('#steps'); box2.innerHTML = '';
+      opts.forEach(function(x){
+        var b = document.createElement('button');
+        b.className = 'chip' + (x === steps ? ' sel' : '');
+        b.textContent = (names[x] || x) + '（' + x + '）';
+        b.onclick = function(){ steps = x; localStorage.setItem(LS.steps, x); renderEngineOptions(e); };
+        box2.appendChild(b);
+      });
+    }
+  }
+
+  function renderPresets(e){
+    var box = $('#presets'); box.innerHTML = '';
+    var presets = (e.params.style && e.params.style.presets) || [];
+    presets.forEach(function(p){
+      var b = document.createElement('button');
+      b.className = 'chip'; b.textContent = p;
+      b.onclick = function(){ $('#style').value = p; };
+      box.appendChild(b);
+    });
+    var tags = e.params.style && e.params.style.type === 'tags';
+    $('#styleHint').textContent = tags
+      ? '这台只认英文标签，写中文也没关系——背后会换成英文。'
+      : '用中文写就行。';
+  }
+
+  // ── 出歌 ──
+  $('#goBtn').onclick = function(){
+    if (!sel) { toast('先选一台引擎'); return; }
+    var lyrics = $('#lyrics').value || '';
+    var style = $('#style').value || '';
+    if (sel.params.lyrics && !lyrics.trim() && !style.trim()) {
+      toast('写点词，或者写一句风格'); return;
+    }
+    if (!sel.params.lyrics && !style.trim()) { toast('写一句风格'); return; }
+    localStorage.setItem(LS.lyrics + sel.id, lyrics);
+    var body = { engine: sel.id, lyrics: lyrics, style: style };
+    if (steps != null) body.steps = steps;
+    if (dur != null) body.duration = dur;
+    $('#goBtn').disabled = true;
+    api('/v1/jobs', { method:'POST', body: JSON.stringify(body) })
+      .then(function(r){
+        currentJobId = r.id;
+        localStorage.setItem(LS.job, currentJobId);
+        startedAt = Date.now();
+        show('viewProgress');
+        renderProgress(r.job);
+        startPoll();
+      })
+      .catch(function(err){ toast(err.message || '没排上'); })
+      .then(function(){ $('#goBtn').disabled = false; });
+  };
+
+  // ── 进度 ──
+  function renderProgress(job){
+    var pct = job.percent || 0;
+    $('#pctNum').textContent = pct;
+    $('#barFill').style.width = pct + '%';
+    $('#progMsg').textContent = job.message || '正在做…';
+    var eta = job.eta_seconds;
+    if (job.state === 'done') { $('#progEta').textContent = ''; }
+    else if (typeof eta === 'number' && eta > 0) {
+      var m = Math.round(eta / 60);
+      $('#progEta').textContent = eta < 60 ? '就快好了' : ('大约还要 ' + m + ' 分钟');
+    } else { $('#progEta').textContent = ''; }
+    if (!startedAt && job.started) startedAt = job.started * 1000;
+    updateWaited();
+  }
+  function updateWaited(){
+    if (!startedAt) { $('#waited').textContent = ''; return; }
+    var s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    var txt = s < 60 ? (s + ' 秒') : (Math.floor(s/60) + ' 分 ' + (s%60) + ' 秒');
+    $('#waited').textContent = '已经等了 ' + txt;
+  }
+  function startPoll(){
+    clearInterval(pollTimer); clearInterval(tickTimer);
+    tickTimer = setInterval(updateWaited, 1000);
+    var ask = function(){
+      api('/v1/jobs/' + currentJobId).then(function(job){
+        renderProgress(job);
+        if (job.state === 'done') {
+          clearInterval(pollTimer); clearInterval(tickTimer);
+          if ($('#viewProgress').classList.contains('on')) {
+            showDone(job);
+          } else {
+            toast('出好了');
+            loadBanner(false);
+          }
+        } else if (job.state === 'failed' || job.state === 'cancelled') {
+          clearInterval(pollTimer); clearInterval(tickTimer);
+          showFail(job);
+        }
+      }).catch(function(){});
+    };
+    ask();
+    pollTimer = setInterval(ask, 2000);
+  }
+  function showFail(job){
+    show('viewCompose');
+    var b = $('#banner');
+    b.hidden = false;
+    b.innerHTML = '<span>' + esc(job.message || '这次没成，换个引擎再试一次') + '</span>';
+  }
+  $('#stopBtn').onclick = function(){
+    if (!confirm('停掉这一首？')) return;
+    api('/v1/jobs/' + currentJobId + '/cancel', { method:'POST' }).then(function(){
+      toast('停了');
+      clearInterval(pollTimer); clearInterval(tickTimer);
+      show('viewCompose');
+    }).catch(function(e){ toast(e.message || '停不下来'); });
+  };
+
+  // ── 完成 ──
+  function showDone(x){
+    // x 可能是 job（outputs 带 url）或 song（files 要补 url）
+    var files = x.outputs || x.files || [];
+    var id = x.id;
+    files = files.map(function(f){
+      return { name: f.name, kind: f.kind, size: f.size,
+               url: f.url || ('/s/' + id + '/files/' + encodeURIComponent(f.name)) };
+    });
+    var preview = files.filter(function(f){ return f.kind === 'preview'; })[0];
+    var audio = files.filter(function(f){ return f.kind === 'audio'; })[0];
+    var scores = files.filter(function(f){ return f.kind === 'score'; });
+    var play = preview || audio;
+
+    $('#doneTitle').textContent = x.title || '未命名';
+    var secs = x.seconds;
+    var durText = '';
+    if (secs) {
+      var s = Math.round(secs);
+      durText = s >= 60 ? (Math.floor(s/60) + ' 分 ' + (s%60) + ' 秒') : (s + ' 秒');
+    }
+    $('#doneMeta').textContent = [x.engine_title || x.engine, durText, x.created].filter(Boolean).join(' · ');
+
+    var player = $('#player');
+    if (play) { player.src = play.url; player.style.display = 'block'; }
+    else { player.removeAttribute('src'); player.style.display = 'none'; }
+
+    var box = $('#downloads'); box.innerHTML = '';
+    function addLink(url, label, ghost){
+      var a = document.createElement('a');
+      a.className = 'dl' + (ghost ? ' ghost' : '');
+      a.href = url; a.setAttribute('download', '');
+      a.textContent = label;
+      box.appendChild(a);
+    }
+    if (preview) addLink(preview.url, '下载歌（mp3）');
+    if (audio) {
+      var ext = (audio.name.split('.').pop() || '').toUpperCase();
+      addLink(audio.url, '下载原文件（' + ext + '）', !preview);
+    }
+    scores.forEach(function(f){
+      var ext = (f.name.split('.').pop() || '').toUpperCase();
+      addLink(f.url, '下载谱（' + ext + '）', true);
+    });
+
+    var shareUrl = location.origin + '/s/' + id;
+    var copy = document.createElement('button');
+    copy.className = 'again'; copy.style.marginTop = '16px';
+    copy.textContent = '复制分享链接';
+    copy.onclick = function(){
+      copyText(shareUrl, function(ok){
+        if (ok) { toast('链接复制好了'); }
+        else { showLinkBox(shareUrl); }
+      });
+    };
+    box.appendChild(copy);
+
+    $('#doneNote').innerHTML =
+      '下载到手机之后，用微信发出去就行。<br>' +
+      '分享链接：<span style="color:#4ade80;word-break:break-all">' + esc(shareUrl) + '</span><br>' +
+      '（这个链接只在同一个 WiFi、或你自己那条回家的路上能打开。）';
+
+    show('viewDone');
+    var b = $('#banner');
+    if (b && !b.hidden) b.hidden = true;
+  }
+
+  $('#againBtn').onclick = function(){
+    currentJobId = '';
+    localStorage.removeItem(LS.job);
+    show('viewCompose');
+    loadBanner(false);
+  };
+
+  // ── 作品库 ──
+  function loadLibrary(){
+    show('viewLibrary');
+    api('/v1/songs').then(function(r){
+      var songs = r.songs || [];
+      var box = $('#songList'); box.innerHTML = '';
+      $('#libEmpty').hidden = songs.length > 0;
+      var lastTop = localStorage.getItem(LS.lastTop) || '';
+      songs.forEach(function(s, i){
+        var b = document.createElement('button');
+        b.className = 'song';
+        var secs = s.seconds;
+        var d = '';
+        if (secs) {
+          var x = Math.round(secs);
+          d = x >= 60 ? (Math.floor(x/60) + '分' + (x%60) + '秒') : (x + '秒');
+        }
+        var isNew = i === 0 && s.id !== lastTop;
+        b.innerHTML = '<div><div class="st">' + esc(s.title) + '</div>' +
+          '<div class="sm">' + esc([s.engine_title || s.engine, d, s.created].filter(Boolean).join(' · ')) + '</div></div>' +
+          (isNew ? '<span class="badge">新</span>' : '');
+        b.onclick = function(){ showDone(s); };
+        box.appendChild(b);
+      });
+      if (songs.length) localStorage.setItem(LS.lastTop, songs[0].id);
+      if (!songs.length) box.innerHTML = '';
+    }).catch(function(e){ toast(e.message || '拿不到作品库'); });
+  }
+
+  // ── 顶部的「上一首」提示 ──
+  function loadBanner(autoJump){
+    var b = $('#banner');
+    if (!currentJobId) { b.hidden = true; return; }
+    api('/v1/jobs/' + currentJobId).then(function(job){
+      if (job.state === 'done') {
+        b.hidden = false;
+        b.innerHTML = '<span><b>上一首出好了</b>：' + esc(job.title || '') + '</span><span style="margin-left:auto">查看 ▸</span>';
+        b.onclick = function(){ showDone(job); };
+      } else if (job.state === 'running' || job.state === 'waiting' || job.state === 'queued') {
+        startedAt = job.started ? job.started * 1000 : Date.now();
+        b.hidden = false;
+        b.innerHTML = '<span>还在跑：' + esc(job.title || '') + '（' + (job.percent || 0) +
+                      '%）</span><span style="margin-left:auto">去看 ▸</span>';
+        b.onclick = function(){ show('viewProgress'); renderProgress(job); startPoll(); };
+        // 只有刚打开页面时才自动接回进度；人自己点了「出歌」回来就别拽他走
+        if (autoJump) { show('viewProgress'); renderProgress(job); startPoll(); }
+      } else {
+        b.hidden = true;
+      }
+    }).catch(function(){ b.hidden = true; });
+  }
+
+  // ── 启动 ──
+  function boot(){
+    fetch('/v1/info').then(function(r){ return r.json(); }).then(function(info){
+      engines = info.engines || [];
+      engineById = {};
+      engines.forEach(function(e){ engineById[e.id] = e; });
+      if (!info.songs_dir_ready) toast('外盘没插，现在出不了歌');
+
+      if (!token) { show('viewPair'); return; }
+      api('/v1/songs').then(function(){
+        renderEngines();
+        var saved = localStorage.getItem(LS.engine);
+        var e = engineById[saved] || engines.filter(function(x){ return x.available; })[0];
+        if (e) selectEngine(e);
+        show('viewCompose');
+        loadBanner(true);
+      }).catch(function(e){
+        if (e.status === 401) return;
+        toast('连不上电脑：' + (e.message || ''));
+      });
+    }).catch(function(){
+      toast('连不上电脑，检查 WiFi 和地址');
+    });
+  }
+
+  document.querySelectorAll('#tabbar button').forEach(function(b){
+    b.onclick = function(){
+      var v = b.getAttribute('data-view');
+      if (v === 'library') loadLibrary();
+      else { show('viewCompose'); loadBanner(false); }
+    };
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>
