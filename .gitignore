@@ -94,3 +94,19 @@ mir-remote/web/app-qr.png
 # 壳 App 的清单与资源里也有 .xml，它们是代码不是作品
 !mir-remote/app/AndroidManifest.xml
 !mir-remote/app/res/values/*.xml
+
+# ── 使用手册（2026-11-17 用户定：手册可以发布）──
+# 只放行手册正文和它用到的图；docs/ 里其他东西仍然不发布
+!docs/
+docs/*
+!docs/使用手册.md
+!docs/images/
+docs/images/*
+!docs/images/00-封面.png
+!docs/images/01-主界面.png
+!docs/images/03-生成中.png
+!docs/images/04-结果条.png
+!docs/images/06-偏好设置.png
+!docs/images/07-第一次打开.png
+!docs/images/08-扒歌词按钮.png
+!docs/images/09-先出谱子.png
