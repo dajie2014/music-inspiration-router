@@ -46,6 +46,14 @@ sys.path.insert(0, str(HERE))
 
 import ss2core as core  # noqa: E402
 
+# ★ 2026-11-15：launchd 拉起来的进程只有 /usr/bin:/bin:/usr/sbin:/sbin，
+#   看不到 Homebrew 的 ffmpeg —— 表现是能转谱的文件也报
+#   "ffmpeg is required to decode audio."（创作台第一次接就撞上）。
+#   给 PATH 补上常见安装位置；转谱的子进程（yue2 transcribe）也吃这个 PATH。
+for _extra in ("/opt/homebrew/bin", "/usr/local/bin"):
+    if os.path.isdir(_extra) and _extra not in os.environ.get("PATH", "").split(":"):
+        os.environ["PATH"] = (os.environ.get("PATH") or "/usr/bin:/bin") + ":" + _extra
+
 SERVICE_NAME = "sheetsage2-semantic"
 VERSION = core.SERVICE_VERSION
 BAR_LIMIT = core.BAR_GUARD_LIMIT
