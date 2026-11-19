@@ -339,9 +339,10 @@ final class AppViewModel: ObservableObject {
     /// 单列成一个方法，是因为初始化与选中两条路都要用同一套判断 ——
     /// 分开写迟早有一处忘了改。
     private func applyEngine(from request: GenerationRequest) {
-        // 只在**可选**的引擎里找：旧记录写着 "acestep" 的（那台模型已经拆了），
-        // 一律回落到 YuE2 —— 否则下拉里没有它，界面会显示一个选不中的空档。
-        engine = EngineKind.selectable.first { $0.apiValue == request.engine } ?? .yue2
+        // 只在**可选**的引擎里找：旧记录写着 stableaudio / heartmula 的，
+        // 一律回落到 **ACE-Step** —— 两台都不在下拉里了（一台去创作台、一台退役），
+        // 否则界面会显示一个选不中的空档。
+        engine = EngineKind.selectable.first { $0.apiValue == request.engine } ?? .aceStep
         yue2Tier = request.steps <= 8 ? .fast : .standard
     }
 

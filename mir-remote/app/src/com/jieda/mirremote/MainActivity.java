@@ -57,6 +57,15 @@ public class MainActivity extends Activity {
             "http://192.168.31.99:7871",
     };
 
+    // 2026-11-19：从外面经 Tailscale 中继绕一圈，2.5 秒常常不够（实测：
+    // 手填地址能连、自动探测却两个都判失败，电脑日志里是 ConnectionReset）。
+    // 用户把它说透了：**这是概率事件**，同一台手机同一时刻，有时通有时不通。
+    // 对策就是「多等一会儿」：连不上的等待给足，连上之后等数据收得短一点，
+    // 失败再自动来一轮。最坏 2×(15+10) 秒，成了一次就立刻返回。
+    static final int CONNECT_TIMEOUT_MS = 15000;
+    static final int READ_TIMEOUT_MS = 10000;
+    static final int PROBE_ROUNDS = 2;
+
     WebView web;
     ProgressBar bar;
     LinearLayout errorBox;
@@ -130,7 +139,8 @@ public class MainActivity extends Activity {
 
         TextView msg = new TextView(this);
         msg.setText("电脑开着吗？手机和电脑在同一个 WiFi 吗？\n\n"
-                + "在外面用的话，手机上的 Tailscale 得开着。");
+                + "在外面用的话，手机上的 Tailscale 得开着。\n\n"
+                + "外面信号慢的时候，多按一两次「再试一次」最容易连上。");
         msg.setTextColor(C_DIM);
         msg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
         msg.setGravity(Gravity.CENTER);
@@ -191,38 +201,74 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                for (final String base : list) {
-                    if (ping(base + "/v1/info")) {
-                        ui.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                probing = false;
-                                sp.edit().putString("base", base).apply();
-                                load(base);
-                            }
-                        });
-                        return;
-                    }
+                String hit = null;
+                for (int round = 0; round < PROBE_ROUNDS && hit == null; round++) {
+                    hit = probeOnce(list);
                 }
+                final String base = hit;
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
                         probing = false;
                         bar.setVisibility(View.GONE);
-                        errorBox.setVisibility(View.VISIBLE);
+                        if (base != null) {
+                            sp.edit().putString("base", base).apply();
+                            load(base);
+                        } else {
+                            errorBox.setVisibility(View.VISIBLE);
+                        }
                     }
                 });
             }
         }).start();
     }
 
+    /** 几个地址同时试，谁先回用谁；最长等一轮 ping 超时多一点。 */
+    String probeOnce(final ArrayList<String> list) {
+        final java.util.concurrent.atomic.AtomicReference<String> found =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.CountDownLatch latch =
+                new java.util.concurrent.CountDownLatch(list.size());
+
+        for (final String base : list) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (found.get() == null && ping(base + "/v1/info")) {
+                            found.compareAndSet(null, base);
+                        }
+                    } catch (Throwable t) {
+                        // 一个地址出事不能拖垮整轮
+                    } finally {
+                        latch.countDown();
+                    }
+                }
+            }).start();
+        }
+
+        long deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS + 3000L;
+        while (System.currentTimeMillis() < deadline) {
+            String got = found.get();
+            if (got != null) return got;
+            if (latch.getCount() == 0) break;
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                break;
+            }
+        }
+        return found.get();
+    }
+
     boolean ping(String url) {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(2500);
-            c.setReadTimeout(2500);
+            c.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            c.setReadTimeout(READ_TIMEOUT_MS);
             c.setRequestMethod("GET");
+            c.setRequestProperty("Connection", "close");
             return c.getResponseCode() == 200;
         } catch (Exception e) {
             return false;
@@ -241,7 +287,7 @@ public class MainActivity extends Activity {
         final EditText et = new EditText(this);
         et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         et.setText(sp.getString("base", CANDIDATES[0]));
-        et.setHint("例如 192.168.31.99:7871");
+        et.setHint("例如 100.110.118.100:7871");
         new AlertDialog.Builder(this)
                 .setTitle("电脑的地址")
                 .setView(et)

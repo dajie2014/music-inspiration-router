@@ -45,6 +45,8 @@ import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
+import urllib.error
+import urllib.request
 
 # ────────────────────────────── 位置与配置 ──────────────────────────────
 
@@ -68,11 +70,26 @@ PORT = int(os.environ.get("MIR_PORT") or 7871)
 HOST = os.environ.get("MIR_HOST") or "0.0.0.0"
 
 PROTOCOL_VERSION = 1
+
+# 手机到底连到没连到、连上来又走没走 —— 出问题时要能回答这个。
+# 只记时间/来源地址/结果，不记内容；每次启动重开，别让它长成几 MB。
+REQ_LOG = os.path.join(STATE, "requests.log")
+
+
+def reqlog(kind, client, detail=""):
+    try:
+        with open(REQ_LOG, "a") as f:
+            f.write("%s %-4s %-15s %s\n" % (time.strftime("%H:%M:%S"), kind,
+                                             client[0] if client else "-", detail))
+    except Exception:
+        pass
+
+
 ENGINE_RUNNING_PATTERNS = (
+    "ace_mlx_adapter.sh",
     "yue2_adapter.sh",
-    "heartmula_adapter.sh",
-    "stable_audio_adapter.sh",
-    "render_adapter.sh",
+    "stable_audio_adapter.sh",   # 入口已撤，但手动跑时也要算"有活"
+    "render_adapter.sh",          # 旧 PyTorch 那条，同理
 )
 
 
@@ -113,6 +130,24 @@ class WriteError(Exception):
 
 ENGINES = [
     {
+        "id": "acestep",
+        "title": "成曲",
+        "hint": "完整编曲，唱得准；也能出纯器乐",
+        "eta_hint": "90 秒的歌约 30 秒出",
+        "script": "ace_mlx_adapter.sh",
+        "outputs": ["audio:wav"],
+        # 2026-11-19 换的引擎：本机 MLX 上的 ACE-Step 1.5 XL Turbo 8bit。
+        # 不再查 python_embeded / checkpoints（那套已经退役）。
+        "needs": ["/Applications/MLX-Serve.app",
+                  "~/.mlx-serve/models/ACE-Step-1.5-XL-Turbo-MLX-Serve-8bit"],
+        "lyrics": True,
+        "style": "text",
+        "steps": None,            # 8 步固定，没有档位可挑
+        "duration": {"min": 10, "max": 600, "default": 90},
+        "eta": None,
+        "presets": ["流行女声", "流行男声", "民谣", "摇滚", "爵士", "古风", "电子", "电影配乐"],
+    },
+    {
         "id": "yue2",
         "title": "写歌",
         "hint": "会唱词，还出谱",
@@ -127,91 +162,30 @@ ENGINES = [
         "eta": {8: 300, 32: 700},
         "presets": ["流行女声", "流行男声", "民谣", "爵士", "Bossa Nova", "古风", "电子", "电影配乐"],
     },
-    {
-        "id": "heartmula",
-        "title": "人声草稿",
-        "hint": "人声干净，伴奏糙；词写长一点，歌才长",
-        "eta_hint": "按长度，3 分钟歌约 4 分钟",
-        "script": "heartmula_adapter.sh",
-        "outputs": ["audio:wav"],
-        "needs": ["../audiocpp-bin/audiocpp_cli", "../audio.cpp/models/HeartMuLa-GGUF"],
-        "lyrics": True,
-        "style": "tags",          # 英文标签；遥控器只给中文按钮，服务端换英文
-        "steps": None,
-        "duration": {"min": 10, "max": 300, "default": 90},
-        "eta": None,
-        "presets": ["流行女声", "流行男声", "民谣", "古风情歌", "说唱", "电子", "清唱"],
-    },
-    {
-        "id": "stableaudio",
-        "title": "纯音乐",
-        "hint": "没人声，垫乐用",
-        "eta_hint": "短的一两分钟就好",
-        "script": "stable_audio_adapter.sh",
-        "outputs": ["audio:wav"],
-        "needs": ["~/AI-Studio/stable-audio-3/optimized/mlx/.venv/bin/python"],
-        "lyrics": False,
-        "style": "text",
-        "steps": None,
-        "duration": {"min": 10, "max": 380, "default": 60},
-        "eta": None,
-        "presets": ["钢琴独奏", "弦乐编制", "氛围铺底", "Lo-fi 循环", "管弦乐", "电子律动"],
-    },
-    {
-        "id": "acestep",
-        "title": "成曲",
-        "hint": "完整编曲，唱得准",
-        "eta_hint": "约 2–3 分钟",
-        "script": "render_adapter.sh",
-        "outputs": ["audio:wav"],
-        # ⚠️ 光有 python 还不算装上：模型 2026-10-16 被拆了（省 10 GB）。
-        #    2026-11-17 实测过这条：只查 python 会显示「可用」，一跑就失败。
-        "needs": ["backend/ACE-Step-1.5/python_embeded/bin/python3.11",
-                  "backend/ACE-Step-1.5/checkpoints/acestep-v15-turbo"],
-        "lyrics": True,
-        "style": "text",
-        "steps": [8, 16, 32],
-        "duration": {"min": 10, "max": 300, "default": 90},
-        "eta": None,
-        "presets": ["流行女声", "流行男声", "民谣", "摇滚", "爵士", "古风", "电子"],
-    },
 ]
 
 ENGINE_BY_ID = {e["id"]: e for e in ENGINES}
 
-# HeartMuLa 的 style 必须是**英文标签**：它把标签当词表 token 匹配，中文基本等于没写。
-# 界面上仍给中文按钮，在这儿换掉（2026-11-10 实测过这条）。
-HM_TAGS = {
-    "流行女声": "pop,female vocal,piano,90 bpm",
-    "流行男声": "pop,male vocal,guitar,95 bpm",
-    "民谣": "folk,acoustic guitar,female vocal,80 bpm",
-    "古风情歌": "ballad,piano,female vocal,75 bpm",
-    "说唱": "hip-hop,rap,male vocal,85 bpm",
-    "电子": "electronic,synth,female vocal,120 bpm",
-    "清唱": "a cappella,female vocal,85 bpm",
+# ACE-Step 吃的是**描述性长句**，而且本机这个 8bit 移植**没有 LM 扩写**
+# （官方那套有个规划器会把短句补全，这里没有）。所以手机上的中文按钮
+# 由服务端换成一句写全的英文描述 —— 和 MIR 界面里那套写法一致（2026-11-19）。
+ACE_STYLE = {
+    "流行女声": "warm Mandarin pop ballad, soft piano, strings, intimate female vocal, 88 bpm, C major, 4/4",
+    "流行男声": "modern Mandarin pop, acoustic guitar, warm male vocal, 95 bpm, C major, 4/4",
+    "民谣": "acoustic folk, fingerpicked steel guitar, upright bass, soft male vocal, 72 bpm, G major, 3/4",
+    "摇滚": "stadium rock, crunchy electric guitars, driving drums, powerful male vocal, 120 bpm, E minor, 4/4",
+    "爵士": "jazz trio, upright bass, brushed drums, warm piano, 100 bpm, F major, 4/4",
+    "古风": "Chinese guzheng and dizi, cinematic strings, gentle female vocal, 75 bpm, D minor, 4/4",
+    "电子": "electronic pop, synth arpeggios, punchy drums, female vocal, 118 bpm, A minor, 4/4",
+    "电影配乐": "cinematic orchestral, sweeping strings, epic brass, dramatic percussion, instrumental, 80 bpm, D minor, 4/4",
 }
-HM_KEYWORDS = [
-    ("女声", "pop,female vocal,piano,90 bpm"),
-    ("男声", "pop,male vocal,guitar,95 bpm"),
-    ("民谣", "folk,acoustic guitar,female vocal,80 bpm"),
-    ("说唱", "hip-hop,rap,male vocal,85 bpm"),
-    ("电子", "electronic,synth,female vocal,120 bpm"),
-    ("钢琴", "piano,ballad,female vocal,80 bpm"),
-    ("摇滚", "rock,guitar,male vocal,110 bpm"),
-]
 
 
-def heartmula_style(raw):
+def ace_style(raw):
+    """中文按钮换成写全的英文描述；自由输入原样交出去（编码器是多语言的）。"""
     s = (raw or "").strip()
-    if not s:
-        return HM_TAGS["流行女声"]
-    if s in HM_TAGS:
-        return HM_TAGS[s]
-    if re.search(r"[\u4e00-\u9fff]", s):
-        for k, v in HM_KEYWORDS:
-            if k in s:
-                return v
-        return HM_TAGS["流行女声"]
+    if s in ACE_STYLE:
+        return ACE_STYLE[s]
     return s
 
 
@@ -228,6 +202,96 @@ def engine_available(e):
 
 
 # ────────────────────────────── 小工具 ──────────────────────────────
+
+
+# ───────────────────────── 乐谱工作台（NotaGen）代理 ─────────────────────────
+#
+# 曲谱工作台是一个独立的本机服务（127.0.0.1:7874，FastAPI）。它只绑本机，
+# 手机够不着 —— 所以由这里代转，手机只跟 7871 说话。
+#
+# 它的接口（2026-11-19 核对）：
+#   GET  /api/options              → {combos: [[时期, 作曲家, 编制], ...]}
+#   POST /api/generate             → {task_id}
+#   GET  /api/task/<tid>           → {status, chars_now, chars, elapsed, xml, preview, error}
+#   GET  /api/settings             → {output_dir}
+# 它只报「已经写了多少字」，没有总量 ⇒ 进度条按字符数估，并显示真实字数。
+
+NOTAGEN_URL = os.environ.get("MIR_NOTAGEN_URL") or "http://127.0.0.1:7874"
+SCORE_TASKS = {}          # 本服务这边的 id -> {tid, period, composer, instrument, ...}
+SCORE_LOCK = threading.Lock()
+
+
+def notagen_call(path, body=None, timeout=20):
+    url = NOTAGEN_URL + path
+    if body is None:
+        req = urllib.request.Request(url)
+    else:
+        req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def notagen_ready():
+    try:
+        notagen_call("/api/options", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def score_title(task):
+    return "%s · %s · %s" % (task["period"], task["composer"], task["instrument"])
+
+
+def score_percent(st):
+    """它只给字数，没有总量：按 3000 字当满格、封顶 95%，剩下的 5% 留给转谱。"""
+    if st.get("status") == "done":
+        return 100
+    chars = int(st.get("chars_now") or 0)
+    return max(2, min(95, int(chars / 3000.0 * 95)))
+
+
+def archive_score(task, st):
+    """把 xml 收进作品库（外盘），并登记成一条能分享的作品。只做一次。"""
+    if task.get("archived"):
+        return
+    xml_name = st.get("xml")
+    if not xml_name:
+        return
+    try:
+        out_dir = (notagen_call("/api/settings", timeout=5).get("output_dir") or "").strip()
+    except Exception:
+        out_dir = ""
+    src = os.path.join(os.path.expanduser(out_dir), xml_name) if out_dir else ""
+    if not src or not os.path.isfile(src):
+        # 找不到原文件就只报链接不可用，不假装成功
+        task["archive_error"] = "乐谱文件不在原来那个文件夹里了"
+        return
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = "%s %s" % (stamp, score_title(task))
+    name = re.sub(r"[\\/:*?\"<>|]", "-", name)[:90]
+    dest_dir = os.path.join(SONGS_DIR, name)
+    os.makedirs(dest_dir, exist_ok=True)
+    dst = os.path.join(dest_dir, os.path.basename(src))
+    shutil.copy2(src, dst)
+    size = os.path.getsize(dst)
+    sid = task["id"]
+    song = {
+        "id": sid,
+        "title": score_title(task),
+        "engine": "score",
+        "engine_title": "乐谱",
+        "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "seconds": st.get("elapsed") or 0,
+        "files": [{"name": os.path.basename(dst), "kind": "score", "size": size}],
+        "style": "%s / %s / %s" % (task["period"], task["composer"], task["instrument"]),
+        "dir": dest_dir,
+    }
+    task["store"].add_song(song)
+    task["archived"] = True
+    task["share_id"] = sid
+    log("乐谱收好了：%s" % song["title"])
 
 
 def read_json(path, default=None):
@@ -544,8 +608,8 @@ class Runner(threading.Thread):
         if seed is None:
             seed = secrets.randbelow(2 ** 31 - 1)
         style = job.get("style") or ""
-        if e["id"] == "heartmula":
-            style = heartmula_style(style)
+        if e["id"] == "acestep":
+            style = ace_style(style)
         params = {
             "prompt": style,
             "lyrics": job.get("lyrics") or "[Instrumental]",
@@ -989,7 +1053,7 @@ def build_share_page(song):
     blocks = []
 
     def link(f, label, ghost):
-        return '<a class="btn%s" href="/s/%s/files/%s" download>%s</a>' % (
+        return '<a class="btn%s" href="/s/%s/files/%s?dl=1" download>%s</a>' % (
             " ghost" if ghost else "", sid, quote_name(f["name"]), label)
 
     # ── 歌：先给能直接听/转发的 mp3，再给要精修的原文件 ──
@@ -1046,6 +1110,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    # 2026-11-19 加的：手机说「连不上」时，要能分辨是「根本没连上来」
+    # 还是「连上来又等不及走了」。答案就在 state/requests.log。
+    def setup(self):
+        BaseHTTPRequestHandler.setup(self)
+        self._t0 = time.time()
+        reqlog("CONN", self.client_address)
+
+    def log_request(self, code="-", size="-"):
+        reqlog("REQ", self.client_address,
+               "%-40s %s %.2fs" % (self.path, code, time.time() - getattr(self, "_t0", time.time())))
+
+    def handle_one_request(self):
+        try:
+            BaseHTTPRequestHandler.handle_one_request(self)
+        except Exception as e:
+            reqlog("ERR", self.client_address,
+                   "%-40s %s: %s %.2fs" % (self.path, type(e).__name__, e,
+                                           time.time() - getattr(self, "_t0", time.time())))
+            raise
+
     # ---- 工具 ----
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -1090,6 +1174,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "jobs": len(self.store.jobs)})
             if path == "/v1/info":
                 return self._json(self._info())
+            if path == "/v1/score/options":
+                if not self._authed():
+                    return self._error(401, "先配对")
+                return self._json(self._score_options())
+            m = re.match(r"^/v1/score/jobs/([A-Za-z0-9]+)$", path)
+            if m:
+                if not self._authed():
+                    return self._error(401, "先配对")
+                return self._json(self._score_status(m.group(1)))
             if path == "/v1/songs":
                 if not self._authed():
                     return self._error(401, "先配对")
@@ -1160,6 +1253,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed():
                     return self._error(401, "先配对")
                 return self._create_job()
+            if path == "/v1/score/jobs":
+                if not self._authed():
+                    return self._error(401, "先配对")
+                return self._score_create()
             m = re.match(r"^/v1/jobs/([A-Za-z0-9]+)/cancel$", path)
             if m:
                 if not self._authed():
@@ -1182,6 +1279,78 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     # ---- 接口实现 ----
+    def _score_options(self):
+        """把曲谱工作台的「时期 / 作曲家 / 编制」名单原样转给手机。"""
+        try:
+            d = notagen_call("/api/options", timeout=8)
+        except Exception:
+            return {"ready": False, "combos": [], "reason": "曲谱工作台没开着"}
+        combos = d.get("combos") or []
+        return {"ready": True, "combos": combos}
+
+    def _score_create(self):
+        body = self._body()
+        period = str(body.get("period") or "").strip()
+        composer = str(body.get("composer") or "").strip()
+        instrument = str(body.get("instrument") or "").strip()
+        if not (period and composer and instrument):
+            return self._error(400, "时期、作曲家、编制三样都要选")
+        try:
+            d = notagen_call("/api/generate", {"period": period, "composer": composer,
+                                               "instrumentation": instrument}, timeout=30)
+        except urllib.error.HTTPError as ex:
+            try:
+                msg = json.loads(ex.read().decode("utf-8")).get("detail") or "这个组合它不写"
+            except Exception:
+                msg = "这个组合它不写"
+            return self._error(400, msg)
+        except Exception:
+            return self._error(409, "曲谱工作台没开着（先在那台电脑上打开它）")
+        sid = secrets.token_hex(4)
+        with SCORE_LOCK:
+            SCORE_TASKS[sid] = {
+                "id": sid, "tid": d.get("task_id"), "period": period,
+                "composer": composer, "instrument": instrument,
+                "store": self.store, "created": now_ts(),
+            }
+        log("排上一份乐谱：%s（%s / %s / %s）" % (sid, period, composer, instrument))
+        return self._json({"id": sid}), 201
+
+    def _score_status(self, sid):
+        task = SCORE_TASKS.get(sid)
+        if not task:
+            return self._error(404, "没有这份乐谱")
+        try:
+            st = notagen_call("/api/task/" + str(task["tid"]), timeout=8)
+        except Exception:
+            return self._error(409, "曲谱工作台断了（它还在跑吗？）")
+        status = st.get("status")
+        if status == "done":
+            archive_score(task, st)
+        out = {
+            "id": sid,
+            "state": {"queued": "queued", "running": "running", "done": "done"}.get(status, "failed"),
+            "percent": score_percent(st),
+            "chars": st.get("chars_now") or st.get("chars") or 0,
+            "elapsed": st.get("elapsed") or 0,
+            "title": score_title(task),
+            "message": {"queued": "排上了，马上开始",
+                        "running": "正在写谱子…",
+                        "done": "谱子写好了"}.get(status, "这一趟没成"),
+        }
+        if status == "error":
+            out["detail"] = st.get("error") or ""
+        if status == "done":
+            if task.get("archived"):
+                out["share_id"] = task["id"]
+                out["files"] = [{"name": f["name"], "kind": "score", "size": f["size"],
+                                 "url": "/s/%s/files/%s?dl=1" % (task["id"], quote_name(f["name"]))}
+                                for f in (self.store.song(task["id"]) or {}).get("files", [])]
+            elif task.get("archive_error"):
+                out["detail"] = task["archive_error"]
+            out["preview"] = st.get("preview") or ""
+        return out
+
     def _info(self):
         engines = []
         for e in ENGINES:
@@ -1326,7 +1495,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "不行")
         if not os.path.exists(full):
             return self._error(404, "文件不在了")
-        self._send_file(full, name)
+        # ?dl=1 才用 attachment：手机浏览器/WebView 见到 inline 的 audio/mpeg
+        # 容易"打开播放"而不是下载，安卓 WebView 那边干脆报下载失败。
+        want_dl = "dl=1" in (urlparse(self.path).query or "")
+        self._send_file(full, name, as_attachment=want_dl)
 
     def _send_file(self, path, name, as_attachment=False):
         """支持 Range —— iOS 的 <audio> 不会播一个不支持 Range 的链接。"""
@@ -1406,7 +1578,7 @@ def public_job(job):
             out[k] = job[k]
     if out.get("outputs"):
         out["outputs"] = [{"name": f["name"], "kind": f["kind"], "size": f["size"],
-                           "url": "/s/%s/files/%s" % (job["id"], quote_name(f["name"]))}
+                           "url": "/s/%s/files/%s?dl=1" % (job["id"], quote_name(f["name"]))}
                           for f in out["outputs"]]
     return out
 
@@ -1459,6 +1631,10 @@ def cleanup_stale_job_dirs(max_age_days=3):
 def main():
     os.makedirs(STATE, exist_ok=True)
     os.makedirs(JOBS_DIR, exist_ok=True)
+    try:
+        open(REQ_LOG, "w").close()   # 每次启动重开，日志别越滚越大
+    except Exception:
+        pass
     try:
         cleanup_stale_job_dirs()
     except Exception:

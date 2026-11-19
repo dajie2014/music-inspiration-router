@@ -140,8 +140,12 @@ enum EngineKind: String, CaseIterable, Identifiable {
     /// ⚠️ 风格只认英文标签（中文标签基本不生效，实测过）；歌词写多长、歌就有多长。
     case heartMuLa = "HeartMuLa"
 
-    /// 下拉里真正列出来的（Composer Step 那台拆了，不列）。
-    static var selectable: [EngineKind] { [.yue2, .stableAudio, .heartMuLa] }
+    /// 下拉里真正列出来的。
+    /// ★ 2026-11-19 用户定盘：这里只放 **ACE-Step 和 YuE2** 两台。
+    ///   Stable Audio Medium 挪去「创作台」（Crafting Caster）管氛围配乐；
+    ///   HeartMuLa 正式退役（他听完新 ACE 的评价：「伴奏甩了它不知道多少条街」）。
+    ///   两个 case 都**故意留着**：能读回旧记录，也在心里留个位置。
+    static var selectable: [EngineKind] { [.aceStep, .yue2] }
 
     var id: String { rawValue }
     var apiValue: String {
@@ -156,7 +160,7 @@ enum EngineKind: String, CaseIterable, Identifiable {
     /// 下拉里那行字要能一眼看出区别，所以带上「出什么」。
     var label: String {
         switch self {
-        case .aceStep:    return "Composer Step · 一段音乐"
+        case .aceStep:    return "ACE-Step · 一首带人声的歌"
         case .yue2:       return "YuE2 · 一首带人声的歌 + 谱子"
         case .stableAudio: return "Stable Audio Medium · 配乐/氛围，不唱词"
         case .heartMuLa:  return "HeartMuLa · 一首带人声的歌（无谱）"
@@ -165,7 +169,7 @@ enum EngineKind: String, CaseIterable, Identifiable {
 
     var hint: String {
         switch self {
-        case .aceStep:    return "几秒到一分钟就出。适合快速试一个想法。"
+        case .aceStep:    return "本机 8 步出歌：90 秒的歌约 30 秒出。风格、时长、BPM、调号都能控。"
         case .yue2:       return "会唱出来，还给一份能拿去 Dorico 改的谱子。没插电源不给跑。"
         case .stableAudio: return "几十秒出一段配乐，最长六分多钟。只出音乐，不唱词，也没有谱子。"
         case .heartMuLa:  return "旋律稳、人声干净，但它风格只认英文标签，伴奏是草稿。一首约四分钟。"
@@ -185,8 +189,14 @@ enum EngineKind: String, CaseIterable, Identifiable {
     /// HeartMuLa 也要：它那个是**上限**（歌词唱完就收尾），留着才有法控制。
     var usesDuration: Bool { self == .aceStep || self == .stableAudio || self == .heartMuLa }
 
-    /// 时长上限：Stable Audio 官方模型最长 380 秒；另外两台按老规矩夹到 300。
-    var maxSeconds: Double { self == .stableAudio ? 380 : 300 }
+    /// 时长上限：ACE-Step 支持到 600 秒；Stable Audio 官方最长 380 秒；其余按老规矩 300。
+    var maxSeconds: Double {
+        switch self {
+        case .aceStep:     return 600
+        case .stableAudio: return 380
+        default:           return 300
+        }
+    }
 }
 
 /// 三档快捷质量（对应扩散步数）。turbo 模型 8 步就够用。

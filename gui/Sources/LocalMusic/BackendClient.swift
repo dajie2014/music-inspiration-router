@@ -128,16 +128,19 @@ final class BackendClient: ObservableObject {
             // 3. 起壳脚本（它自己再起独立子进程跑推理）
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-            // 两台引擎，同一套契约（params.json 进、progress.json 出）：
+            // 每台引擎一套自己的壳，但契约完全一样（params.json 进、progress.json 出）：
             // 换的只是脚本名，起进程、轮询、停止这些一个字都不用改。
-            // 老任务没写 engine 的，一律当 Composer Step。
-            // 2026-11-10 起有三台：YuE2、Stable Audio Medium、以及拆掉了但留着后路的 Composer Step。
+            // 老任务没写 engine 的，一律当 ACE-Step。
+            // ★ 2026-11-19 换的 ACE：不再是官方 PyTorch 那套（会拽空整机内存），
+            //   而是本机 MLX 上的 ACE-Step 1.5 XL Turbo 8bit（8 步、约 10.5 GB 峰值）。
+            //   Stable Audio 与 HeartMuLa 的下拉入口已撤（前者去创作台，后者退役），
+            //   这里留两行只是为了让旧记录还能被认出来、并在缺脚本时给人话报错。
             let scriptName: String
             switch request.engine {
             case "yue2":        scriptName = "yue2_adapter.sh"
             case "stableaudio": scriptName = "stable_audio_adapter.sh"
             case "heartmula":   scriptName = "heartmula_adapter.sh"
-            default:            scriptName = "render_adapter.sh"
+            default:            scriptName = "ace_mlx_adapter.sh"
             }
             let script = root.appendingPathComponent(scriptName).path
 

@@ -111,6 +111,14 @@
           border-radius:14px;padding:12px 14px;margin-bottom:16px;font-size:14px;cursor:pointer}
   .banner[hidden]{display:none}
   .banner b{color:var(--accent)}
+  /* 乐谱页 */
+  select.sel{
+    width:100%;background:#10131a;border:1.5px solid var(--line);border-radius:14px;
+    color:var(--text);font:inherit;font-size:16px;padding:14px;outline:none;appearance:none;
+    background-image:none;
+  }
+  select.sel:focus{border-color:#3a4252}
+  .scoresub{font-size:13px;color:var(--dim);margin-top:6px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -179,6 +187,36 @@
   <button class="again" id="againBtn">再出一首</button>
 </section>
 
+<!-- 乐谱：选三样 -->
+<section id="viewScore">
+  <label class="blk">时期</label>
+  <div class="chips" id="periodChips"></div>
+  <label class="blk">作曲家</label>
+  <select class="sel" id="composerSel"></select>
+  <label class="blk">编制</label>
+  <div class="chips" id="instrChips"></div>
+  <div class="scoresub" id="scoreHint">三样都选好就能写。一首大概两三分钟，出来是 MusicXML。</div>
+  <button class="go" id="scoreGoBtn">写谱</button>
+</section>
+
+<!-- 乐谱：进度 -->
+<section id="viewScoreProgress">
+  <div class="pct"><span id="scorePct">0</span><small>%</small></div>
+  <div class="msg" id="scoreMsg">排上了…</div>
+  <div class="bar"><i id="scoreBar"></i></div>
+  <div class="waited" id="scoreChars"></div>
+</section>
+
+<!-- 乐谱：完成 -->
+<section id="viewScoreDone">
+  <div class="done-title" id="scoreTitle"></div>
+  <div class="done-meta" id="scoreMeta"></div>
+  <div id="scoreFiles"></div>
+  <button class="go2" id="scoreShareBtn">复制分享链接（发微信）</button>
+  <div class="note">谱子是草稿：它学的是「像谁」，不是「能出版」。结构细节进 Dorico 再改。</div>
+  <button class="again" id="scoreAgainBtn">再写一份</button>
+</section>
+
 <!-- 作品库 -->
 <section id="viewLibrary">
   <div id="songList"></div>
@@ -187,6 +225,7 @@
 
 <nav id="tabbar">
   <button data-view="compose" class="sel">出歌</button>
+  <button data-view="score">乐谱</button>
   <button data-view="library">作品库</button>
 </nav>
 
@@ -274,13 +313,16 @@
     setTimeout(function(){ ta.focus(); ta.select(); }, 60);
   }
   function show(name){
-    ['viewPair','viewCompose','viewProgress','viewDone','viewLibrary'].forEach(function(id){
+    ['viewPair','viewCompose','viewProgress','viewDone','viewLibrary',
+     'viewScore','viewScoreProgress','viewScoreDone'].forEach(function(id){
       $('#'+id).classList.toggle('on', id === name);
     });
     var composing = name !== 'viewPair';
     $('#tabbar').classList.toggle('on', composing);
     $('#goBtn').style.display = name === 'viewCompose' ? 'block' : 'none';
-    var tab = (name === 'viewLibrary') ? 'library' : 'compose';
+    $('#scoreGoBtn').style.display = name === 'viewScore' ? 'block' : 'none';
+    var tab = (name === 'viewLibrary') ? 'library'
+            : (name.indexOf('viewScore') === 0 ? 'score' : 'compose');
     document.querySelectorAll('#tabbar button').forEach(function(b){
       b.classList.toggle('sel', b.getAttribute('data-view') === tab);
     });
@@ -380,7 +422,8 @@
     db.hidden = !e.params.duration;
     if (e.params.duration) {
       var d = e.params.duration;
-      var cands = [30, 60, 90, 180, 300].filter(function(x){ return x >= d.min && x <= d.max; });
+      // 用户 2026-11-19：4:30 是推荐上限，排在前面；5 分钟保留在它后面当极端选项。
+      var cands = [30, 60, 90, 180, 270, 300].filter(function(x){ return x >= d.min && x <= d.max; });
       if (cands.length === 0) cands = [d.default];
       var box = $('#durs'); box.innerHTML = '';
       cands.forEach(function(x){
@@ -633,6 +676,153 @@
     }).catch(function(){ b.hidden = true; });
   }
 
+  // ── 乐谱工作台（走电脑上的曲谱服务，这儿只是遥控） ──
+  var scoreCombos = [], scorePeriod = '', scoreComposer = '', scoreInstr = '';
+  var scoreJobId = '', scoreTimer = null;
+  var PERIOD_CN = {Baroque: '巴洛克', Classical: '古典', Romantic: '浪漫'};
+  var INSTR_CN = {'Art Song': '艺术歌曲', Chamber: '室内乐', Choral: '合唱',
+                  Keyboard: '键盘', Orchestral: '管弦乐', 'Vocal-Orchestral': '声乐与乐队'};
+
+  function loadScoreOptions(){
+    if (scoreCombos.length) return Promise.resolve();
+    return api('/v1/score/options').then(function(d){
+      if (!d.ready) { toast(d.reason || '曲谱工作台没开着'); return; }
+      scoreCombos = d.combos || [];
+      renderScorePeriods();
+    }).catch(function(e){ toast(e.message || '拿不到乐谱清单'); });
+  }
+
+  function renderScorePeriods(){
+    var periods = [];
+    scoreCombos.forEach(function(c){ if (periods.indexOf(c[0]) < 0) periods.push(c[0]); });
+    var box = $('#periodChips'); box.innerHTML = '';
+    periods.forEach(function(p){
+      var b = document.createElement('button');
+      b.className = 'chip' + (p === scorePeriod ? ' sel' : '');
+      b.textContent = (PERIOD_CN[p] || p) + ' ' + p;
+      b.onclick = function(){
+        scorePeriod = p; scoreComposer = ''; scoreInstr = '';
+        renderScorePeriods();
+      };
+      box.appendChild(b);
+    });
+    renderScoreComposers();
+  }
+
+  function renderScoreComposers(){
+    var sel = $('#composerSel'); sel.innerHTML = '';
+    var list = [];
+    scoreCombos.forEach(function(c){
+      if (c[0] === scorePeriod && list.indexOf(c[1]) < 0) list.push(c[1]);
+    });
+    if (!list.length) {
+      var o0 = document.createElement('option');
+      o0.textContent = '先选一个时期'; sel.appendChild(o0);
+      renderScoreInstr();
+      return;
+    }
+    var opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '选一位作曲家（' + list.length + ' 位）';
+    sel.appendChild(opt);
+    list.forEach(function(n){
+      var o = document.createElement('option'); o.value = n; o.textContent = n;
+      sel.appendChild(o);
+    });
+    if (scoreComposer && list.indexOf(scoreComposer) >= 0) sel.value = scoreComposer;
+    sel.onchange = function(){
+      scoreComposer = sel.value; scoreInstr = '';
+      renderScoreInstr();
+    };
+    renderScoreInstr();
+  }
+
+  function renderScoreInstr(){
+    var box = $('#instrChips'); box.innerHTML = '';
+    var list = [];
+    scoreCombos.forEach(function(c){
+      if (c[0] === scorePeriod && c[1] === scoreComposer && list.indexOf(c[2]) < 0) list.push(c[2]);
+    });
+    list.forEach(function(n){
+      var b = document.createElement('button');
+      b.className = 'chip' + (n === scoreInstr ? ' sel' : '');
+      b.textContent = (INSTR_CN[n] || n) + ' ' + n;
+      b.onclick = function(){
+        scoreInstr = n; renderScoreInstr();
+      };
+      box.appendChild(b);
+    });
+    $('#scoreHint').textContent = (scorePeriod && scoreComposer)
+      ? '写 ' + (PERIOD_CN[scorePeriod] || scorePeriod) + ' · ' + scoreComposer +
+        (scoreInstr ? ' · ' + (INSTR_CN[scoreInstr] || scoreInstr) : ' —— 还得选一个编制')
+      : '三样都选好就能写。一首大概两三分钟，出来是 MusicXML。';
+  }
+
+  function submitScore(){
+    if (!scorePeriod || !scoreComposer || !scoreInstr) { toast('时期、作曲家、编制，三样都选'); return; }
+    var btn = $('#scoreGoBtn'); btn.disabled = true;
+    api('/v1/score/jobs', {
+      method: 'POST',
+      body: JSON.stringify({period: scorePeriod, composer: scoreComposer, instrument: scoreInstr})
+    }).then(function(d){
+      scoreJobId = d.id;
+      localStorage.setItem('mir.scoreJob', scoreJobId);
+      show('viewScoreProgress');
+      $('#scorePct').textContent = '0';
+      $('#scoreBar').style.width = '0%';
+      $('#scoreMsg').textContent = '排上了…';
+      pollScore();
+    }).catch(function(e){ toast(e.message || '没排上'); })
+      .finally(function(){ btn.disabled = false; });
+  }
+
+  function pollScore(){
+    clearTimeout(scoreTimer);
+    if (!scoreJobId) return;
+    api('/v1/score/jobs/' + scoreJobId).then(function(j){
+      if (j.state === 'done') { renderScoreDone(j); return; }
+      if (j.state === 'failed') {
+        toast(j.detail || j.message || '这一趟没成');
+        show('viewScore');
+        return;
+      }
+      var pc = Math.max(2, j.percent || 0);
+      $('#scorePct').textContent = pc;
+      $('#scoreBar').style.width = pc + '%';
+      $('#scoreMsg').textContent = j.message || '正在写…';
+      var sec = Math.round(j.elapsed || 0);
+      $('#scoreChars').textContent = j.chars
+        ? ('已经写了 ' + j.chars + ' 个字符 · ' + sec + ' 秒')
+        : (sec ? sec + ' 秒' : '');
+      scoreTimer = setTimeout(pollScore, 2500);
+    }).catch(function(){ scoreTimer = setTimeout(pollScore, 5000); });
+  }
+
+  function renderScoreDone(j){
+    clearTimeout(scoreTimer);
+    show('viewScoreDone');
+    $('#scoreTitle').textContent = j.title || '乐谱';
+    $('#scoreMeta').textContent = '写完用了 ' + Math.round(j.elapsed || 0) + ' 秒';
+    var box = $('#scoreFiles'); box.innerHTML = '';
+    (j.files || []).forEach(function(f){
+      var a = document.createElement('a');
+      a.className = 'dl'; a.href = f.url; a.setAttribute('download', '');
+      a.textContent = '下载谱子（' + f.name.split('.').pop().toUpperCase() + '）';
+      box.appendChild(a);
+    });
+    var shareBtn = $('#scoreShareBtn');
+    shareBtn.style.display = j.share_id ? 'block' : 'none';
+    shareBtn.onclick = function(){
+      var url = location.origin + '/s/' + j.share_id;
+      copyText(url, function(ok){
+        if (ok) toast('链接复制好了，去微信里粘贴');
+        else showLinkBox(url);
+      });
+    };
+  }
+
+  $('#scoreGoBtn').onclick = submitScore;
+  $('#scoreAgainBtn').onclick = function(){ show('viewScore'); };
+
   // ── 启动 ──
   function boot(){
     fetch('/v1/info').then(function(r){ return r.json(); }).then(function(info){
@@ -662,6 +852,7 @@
     b.onclick = function(){
       var v = b.getAttribute('data-view');
       if (v === 'library') loadLibrary();
+      else if (v === 'score') { loadScoreOptions(); show('viewScore'); }
       else { show('viewCompose'); loadBanner(false); }
     };
   });
