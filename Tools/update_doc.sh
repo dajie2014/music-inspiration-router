@@ -33,8 +33,13 @@ mkdir -p build/doc
 echo "==> [0/4] 排封面"
 # 封面用欢迎界面的截图（用户 2026-10-18 定的）。版本号从 CHANGELOG 顶上取，
 # 不在封面里另写一个 —— 否则两边迟早对不上。
+#
+# ★ 2026-11-19：封面底部**不再印「日期 · 版本号」**（`--no-foot`）。
+#   用户 10-27 已经定过「封面上不要写版本号最好」、连日期也去掉；
+#   但这条没落到本脚本里，于是每版又印上一次，而且日期一直停在 10 月。
+#   版本号该出现的地方是：程序「关于 / 版本历史」、CHANGELOG 第一行。
 VER="$(grep -m1 -E '^## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | sed -E 's/^## ([0-9.]+).*/\1/')"
-"$PY" Tools/make_cover.py docs/images/07-第一次打开.png docs/images/00-封面.png --version "$VER"
+"$PY" Tools/make_cover.py docs/images/07-第一次打开.png docs/images/00-封面.png --version "$VER" --no-foot
 
 echo "==> [1/4] 生成 DOCX"
 "$PY" Tools/make_article_docx.py docs/使用手册.md "$DOCX"
