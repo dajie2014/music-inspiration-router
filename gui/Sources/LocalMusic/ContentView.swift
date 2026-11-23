@@ -967,8 +967,12 @@ final class AppViewModel: ObservableObject {
         // YuE2 只认字、不认 `_`，送进去只会让它少一个音节 —— 所以这里剔掉。
         // 再把【主歌1】【副歌】这类中文结构标记换成引擎认的英文方括号标记。
         request.lyrics = SectionTags.toEngine(Self.lyricsForEngine(request.lyrics))
-        // 两台引擎的「质量档」都落在 steps 上，含义各自不同：
-        // ACE-Step 是扩散步数，YuE2 是声学合成的步数（8 快 / 32 标准）。
+        // ★ 2026-11-19：**ACE 面板上的「质量」三档已经撤掉**（用户当天点名
+        //   「50 步目前也跑不出来，可以在 Mac 端把它砍了」）。
+        //   根因：新的 ACE 是固定 8 步的 turbo 版，`ace_mlx_generate.py` 根本不
+        //   转发 steps，服务端模型 meta 里也没有步数 ⇒ 三档选了不会有任何变化。
+        //   这里仍按 tier 填 steps（默认 low = 8），只是界面上不再给人挑。
+        //   YuE2 的档位是另一套（`yue2Tier`，8/32），照旧显示在它自己的面板里。
         request.steps = engine == .yue2 ? yue2Tier.steps : tier.steps
         request.duration = min(engine.maxSeconds, max(10, request.duration))
         // Stable Audio 没有人声：把可能残留在框里的词清掉 —— 一是它不认，
@@ -3172,9 +3176,6 @@ struct ContentView: View {
                 labeledInline("模式") {
                     dropdown(options: GenerationMode.allCases, selection: $vm.mode) { $0.rawValue }
                 }
-                labeledInline("质量") {
-                    tierPicker
-                }
                 labeledInline("语言") {
                     dropdown(options: languageOptions.map(\.code), selection: $vm.form.language) { code in
                         languageOptions.first { $0.code == code }?.name ?? code
@@ -3583,6 +3584,11 @@ struct ContentView: View {
         .fixedSize()
     }
 
+    /// 「质量」三档（低·8 步／中·16 步／高·32 步）。
+    ///
+    /// ⚠️ **2026-11-19 起不在 ACE 面板上显示了** —— 新的 ACE-Step 是固定 8 步的
+    /// turbo 版，三档选了不生效。控件定义先留着（历史记录选中时还要读回 tier，
+    /// 将来服务端真支持步数也能原样接回来），但**不要**再往界面上摆。
     private var tierPicker: some View {
         HStack(spacing: 0) {
             ForEach(QualityTier.allCases) { t in

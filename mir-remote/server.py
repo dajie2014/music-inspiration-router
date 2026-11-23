@@ -189,6 +189,45 @@ def ace_style(raw):
     return s
 
 
+# ── 「要纯器乐」的自然说法（2026-11-20 用户要求）──────────────────────────
+#
+# 他原话：写 `instrumental` 就能认，**不用加什么括号**。
+# 所以词框里如果只是在表达「这首别唱，出器乐」，就替成引擎认的 [Instrumental]。
+# 认的是整句意思，不是关键词——免得某句正经歌词里正好用了这个词被误判。
+_INSTR_FILLER = {"instrumental", "instrumentals", "music", "only", "pure",
+                 "just", "track", "piece", "no", "vocals", "vocal",
+                 "singing", "without", "please", "a", "the", "an", "it"}
+_INSTR_WHOLE = {
+    "纯音乐", "纯器乐", "器乐", "纯乐器", "乐器曲", "无人声", "无歌词",
+    "不要人声", "只出器乐", "只要器乐", "别唱", "不要唱",
+    "no vocals", "no vocal", "without vocals", "no singing",
+}
+
+
+def is_instrumental_wording(text):
+    """这句话是「要纯器乐」的意思吗（不是歌词）。"""
+    raw = (text or "").strip().lower()
+    if not raw:
+        return False
+    # 去标点、括号、多余空白，再按整句判断
+    s = re.sub(r"[^\w\u4e00-\u9fff]+", " ", raw).strip()
+    if not s:
+        return False
+    if s in _INSTR_WHOLE:
+        return True
+    words = s.split()
+    # 整句只有 instrumental 这类词（instrumental / instrumental music / no vocals …）
+    if "instrumental" in words and all(w in _INSTR_FILLER for w in words):
+        return True
+    # 「instrumental + 几笔修饰」的短句也算（instrumental jazz night）
+    if words and words[0] in ("instrumental", "instrumentals") and len(words) <= 6:
+        return True
+    # 中文短句：纯 + 器乐/音乐
+    if len(s) <= 8 and re.search(r"纯|只|别唱|不要唱", s) and re.search(r"器乐|音乐|乐器", s):
+        return True
+    return False
+
+
 def _abs_path(rel):
     """引擎本体可以写在项目里，也可以写在家目录里（Stable Audio 就是 ~/AI-Studio）。"""
     rel = os.path.expanduser(rel)
@@ -1423,10 +1462,14 @@ class Handler(BaseHTTPRequestHandler):
         style = str(body.get("style") or "").strip()[:1000]
         if not e["lyrics"]:
             lyrics = "[Instrumental]"
+        elif is_instrumental_wording(lyrics):
+            # 词框里写的是「要纯器乐」的意思，不是歌词（instrumental / 纯音乐 / 无人声…）。
+            # 他 2026-11-20 说过：直接写 instrumental 就行，不用加括号。
+            lyrics = "[Instrumental]"
         if not lyrics:
             lyrics = "[Instrumental]"
-        if not style and not e["lyrics"]:
-            return self._error(400, "写一句风格吧（纯音乐没有词，全靠它）")
+        if lyrics == "[Instrumental]" and not style:
+            return self._error(400, "纯器乐没有词，写一句风格吧（比如：钢琴 慢 悲伤）")
 
         steps = body.get("steps")
         if e.get("steps"):
