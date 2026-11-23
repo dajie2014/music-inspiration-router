@@ -190,7 +190,7 @@ enum SheetSage2Client {
 
         let script = projectRoot
             .deletingLastPathComponent()
-            .appendingPathComponent("yue2-local/tools/xml2abc/xml2abc_177/xml2abc.py")
+            .appendingPathComponent("yue2-local/tools/xml2abc/xml2abc_179/xml2abc.py")
         guard FileManager.default.fileExists(atPath: script.path) else { return nil }
 
         let process = Process()

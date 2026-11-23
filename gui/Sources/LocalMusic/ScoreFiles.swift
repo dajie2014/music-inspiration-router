@@ -181,6 +181,54 @@ enum ScoreFiles {
         return produced
     }
 
+    /// 是不是 MIDI 文件（`.mid` / `.midi`）。
+    ///
+    /// ⚠️ 别用 `ScoreFormat.of()` 判 —— 它对 MIDI 会落到 `.abc`（默认分支），
+    ///    因为它只认识 XML 和 ABC 两种。这里单独判。
+    static func isMIDI(_ url: URL) -> Bool {
+        ["mid", "midi"].contains(url.pathExtension.lowercased())
+    }
+
+    /// MIDI → MusicXML（**实验性**，2026-11-23 用户要的口子）。
+    ///
+    /// 为什么多一步 MuseScore：MIDI 里没有调号、拍号、声部分配、打击乐映射，
+    /// MuseScore 的 MIDI 导入器会把这些**猜**出来；不猜的话转出来的谱子没法读。
+    /// 转换器是 `yue2-local/midi2xml`（和 `abcxml` 放在同一个目录）。
+    ///
+    /// 输出与输入**同目录同名**，只换后缀 —— 与 `convert` 的规矩一致。
+    /// MIDI 里没有歌词、连音、力度、表情，转出来不会有（这不是丢东西）。
+    /// 真正跑 `midi2xml`。
+    ///
+    /// ⚠️ 标成 `nonisolated`，好放到后台跑 —— MIDI 转谱要几十秒，
+    /// 在主线程 `waitUntilExit` 会让界面像卡死一样（本项目最忌讳"点了没反应"）。
+    /// `tool` 由调用方在主线程算好传进来（`converter` 那边要问项目根，是主线程的活）。
+    nonisolated static func runMIDI2XML(_ file: URL, tool: URL) throws -> URL {
+        guard FileManager.default.isExecutableFile(atPath: tool.path) else {
+            throw Failure.convertFailed("找不到转换器（\(tool.path)）")
+        }
+        let process = Process()
+        process.executableURL = tool
+        process.arguments = [file.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let produced = file.deletingPathExtension().appendingPathExtension("xml")
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: produced.path) else {
+            let lines = (String(data: output, encoding: .utf8) ?? "")
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let tail = lines.suffix(3).joined(separator: "\n")
+            throw Failure.convertFailed(tail.isEmpty ? "退出码 \(process.terminationStatus)" : tail)
+        }
+        return produced
+    }
+
     /// 旧项目的 MusicXML → 工作室要的 ABC，**先探八度**（2026-10-25 用户要的：
     /// 「不要直接放上去，做个探针检查一下；还是高八度就改成新机制」）。
     ///
@@ -466,15 +514,15 @@ enum ScoreFiles {
         lastScoreFolder = file.deletingLastPathComponent()
     }
 
-    /// 挑一份谱子文件（XML 或 abc）。
+    /// 挑一份谱子文件（XML / abc / MIDI）。
     static func pickFile() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "选一份谱子"
-        panel.message = "MusicXML（Dorico 导出的）或 abc 都行"
+        panel.message = "MusicXML（Dorico 导出的）或 abc 都行；MIDI 也行（实验：会先转成 MusicXML）"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         var types: [UTType] = []
-        for ext in ["xml", "musicxml", "abc"] {
+        for ext in ["xml", "musicxml", "abc", "mid", "midi"] {
             if let type = UTType(filenameExtension: ext) { types.append(type) }
         }
         if !types.isEmpty { panel.allowedContentTypes = types }
@@ -705,6 +753,13 @@ extension AppViewModel {
         guard let file = ScoreFiles.pickFile() else { return }
         // 记住这次在哪儿挑的 —— 下次还开那儿（他不用每次重新翻）。
         ScoreFiles.rememberScoreFolder(file)
+        // ★ 实验（2026-11-23 用户要的口子）：选到 MIDI 就先转成 MusicXML，
+        //   不进后面的「重唱 / 只转格式」那一步 —— MIDI 没有歌词，重唱无从谈起。
+        //   转完只告诉他文件在哪儿，要不要接着用由他再点一次。
+        if ScoreFiles.isMIDI(file) {
+            convertMIDIToScore(file)
+            return
+        }
         // 没选中任何一首就传 nil —— 那句话得跟着换成"写新歌"的说法
         // （见 `askWhatToDo`；用户 2026-10-13 要的正是空项目里这一条）。
         switch ScoreFiles.askWhatToDo(fileName: file.lastPathComponent,
@@ -712,6 +767,29 @@ extension AppViewModel {
         case .cancel:      return
         case .convertOnly: convertImported(file)
         case .resing:      resing(with: file)
+        }
+    }
+
+    /// MIDI → MusicXML（**实验功能**，2026-11-23 用户要的口子）。
+    ///
+    /// 转完只提示一句，不弹"要干什么" —— MIDI 没有歌词，重唱无从谈起；
+    /// 他要是想接着用，再点一次「导入 MusicXML」挑转出来的那份。
+    /// 转换放后台（几十秒），界面不卡。
+    func convertMIDIToScore(_ file: URL) {
+        let tool = ScoreFiles.converter.deletingLastPathComponent()
+            .appendingPathComponent("midi2xml")
+        exportMessage = "MIDI 转 MusicXML（实验）…谱子大时要几十秒，别急"
+        Task {
+            do {
+                let xml = try await Task.detached(priority: .userInitiated) {
+                    try ScoreFiles.runMIDI2XML(file, tool: tool)
+                }.value
+                await MainActor.run {
+                    exportMessage = "转好了：\(xml.lastPathComponent)（实验功能，和 MIDI 放在同一个文件夹）"
+                }
+            } catch {
+                await MainActor.run { exportMessage = error.localizedDescription }
+            }
         }
     }
 
